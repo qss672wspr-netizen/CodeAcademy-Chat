@@ -64,88 +64,370 @@ HTML = r"""<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>iLoad.lt Chat</title>
   <style>
-    body{margin:0;background:#0b0f0c;color:#7cff6b;
-      font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Courier New",monospace;}
-    .top{padding:12px 16px;border-bottom:1px solid #163016;color:#3bbf3b;font-size:14px}
-    .wrap{
+    :root{
+      --bg: #07090b;
+      --panel: rgba(10, 14, 12, 0.72);
+      --panel2: rgba(8, 10, 9, 0.65);
+      --border: rgba(70, 255, 150, 0.16);
+      --text: #b8ffcf;
+      --muted: rgba(184, 255, 207, 0.55);
+      --accent: #7cff6b;
+      --accent2: #6be4ff;
+      --warn: #ffd66b;
+      --danger: #ff6b6b;
+      --shadow: 0 10px 30px rgba(0,0,0,.45);
+      --radius: 14px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace;
+    }
+
+    /* THEMES */
+    body.theme-cyber{
+      --bg:#06080a; --panel:rgba(6,10,10,.72); --panel2:rgba(5,7,8,.65);
+      --border:rgba(124,255,107,.18); --text:#caffd9; --muted:rgba(202,255,217,.55);
+      --accent:#7cff6b; --accent2:#6be4ff;
+    }
+    body.theme-glass{
+      --bg:#0a0c12; --panel:rgba(18, 22, 35, .62); --panel2:rgba(14, 18, 28, .55);
+      --border:rgba(130,170,255,.18); --text:#e7eeff; --muted:rgba(231,238,255,.55);
+      --accent:#82aaff; --accent2:#ff6be8;
+    }
+    body.theme-matrix{
+      --bg:#020403; --panel:rgba(2, 8, 4, .70); --panel2:rgba(1, 6, 3, .60);
+      --border:rgba(124,255,107,.16); --text:#bfffd0; --muted:rgba(191,255,208,.55);
+      --accent:#00ff84; --accent2:#7cff6b;
+    }
+    body.theme-crt{
+      --bg:#050607; --panel:rgba(7, 9, 10, .78); --panel2:rgba(6, 7, 8, .68);
+      --border:rgba(255,214,107,.16); --text:#ffe9b8; --muted:rgba(255,233,184,.55);
+      --accent:#ffd66b; --accent2:#7cff6b;
+    }
+
+    html, body { height:100%; }
+    body{
+      margin:0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--mono);
+      overflow:hidden;
+    }
+
+    /* Background “PRO” layers */
+    .bg{
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events:none;
+    }
+    /* subtle grid */
+    .bg::before{
+      content:"";
+      position:absolute;
+      inset:-2px;
+      opacity: .20;
+      background:
+        linear-gradient(to right, rgba(255,255,255,.04) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255,255,255,.03) 1px, transparent 1px);
+      background-size: 46px 46px;
+      transform: translateZ(0);
+      mask-image: radial-gradient(circle at 40% 10%, rgba(0,0,0,1) 0%, rgba(0,0,0,.7) 40%, rgba(0,0,0,0) 75%);
+    }
+    /* scanlines */
+    .bg::after{
+      content:"";
+      position:absolute;
+      inset:0;
+      opacity:.10;
+      background: repeating-linear-gradient(
+        to bottom,
+        rgba(0,0,0,0) 0px,
+        rgba(0,0,0,0) 2px,
+        rgba(0,0,0,.55) 3px
+      );
+      animation: scan 8s linear infinite;
+    }
+    @keyframes scan{
+      0%{ transform: translateY(0); }
+      100%{ transform: translateY(10px); }
+    }
+
+    /* layout */
+    .app{
+      position: relative;
+      z-index: 1;
+      height: 100%;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 12px;
+      padding: 14px;
+      box-sizing: border-box;
+    }
+
+    .topbar{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: linear-gradient(180deg, var(--panel), rgba(0,0,0,0));
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(10px);
+    }
+    .brand{
+      display:flex;
+      gap:10px;
+      align-items:baseline;
+      min-width: 240px;
+    }
+    .brand .title{
+      font-weight: 800;
+      letter-spacing: .2px;
+      color: var(--accent);
+    }
+    .brand .topic{
+      color: var(--text);
+      font-weight: 700;
+    }
+    .status{
+      display:flex;
+      align-items:center;
+      gap:10px;
+      color: var(--muted);
+      font-size: 13px;
+      flex: 1;
+      justify-content:center;
+      text-align:center;
+    }
+    .pill{
+      border: 1px solid var(--border);
+      background: rgba(0,0,0,.18);
+      padding: 6px 10px;
+      border-radius: 999px;
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      white-space:nowrap;
+    }
+    .dot{
+      width:10px;height:10px;border-radius:999px;
+      background: var(--danger);
+      box-shadow: 0 0 14px rgba(255,107,107,.18);
+    }
+    .dot.ok{
+      background: var(--accent);
+      box-shadow: 0 0 14px rgba(124,255,107,.18);
+    }
+
+    .controls{
+      display:flex;
+      gap:10px;
+      align-items:center;
+      justify-content:flex-end;
+      min-width: 320px;
+    }
+    select, .chk{
+      font-family: var(--mono);
+      color: var(--text);
+      background: rgba(0,0,0,.25);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 10px;
+      outline:none;
+    }
+    .chk{
+      display:flex;
+      gap:8px;
+      align-items:center;
+      user-select:none;
+      cursor:pointer;
+    }
+    .chk input{ accent-color: var(--accent); }
+
+    .main{
       display:grid;
-      grid-template-columns: 1fr 260px;
-      grid-template-rows: 1fr auto;
-      height: calc(100vh - 45px);
+      grid-template-columns: 1fr 290px;
+      gap: 12px;
+      min-height: 0; /* allow scroll areas */
     }
+
+    .panel{
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--panel2);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(10px);
+      overflow: hidden;
+      min-height: 0;
+    }
+
     #log{
-      grid-column:1;
-      grid-row:1;
-      padding:14px 16px;
+      padding: 14px 16px;
       overflow:auto;
-      white-space:pre-wrap;
-      line-height:1.35;
-      border-right: 1px solid #163016;
+      white-space: pre-wrap;
+      line-height: 1.45;
+      min-height: 0;
     }
-    #side{
-      grid-column:2;
-      grid-row:1;
-      padding:12px 12px;
+
+    /* message styles */
+    .line{ margin: 2px 0; }
+    .t{ color: rgba(124,255,107,.40); }
+    .sys{ color: var(--muted); }
+    .msg{ color: var(--text); }
+    .nick{ font-weight: 800; }
+    .me{ color: var(--accent2); }
+
+    /* sidebar */
+    .sidehead{
+      padding: 12px 12px;
+      border-bottom: 1px solid var(--border);
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .sidehead b{ color: var(--text); }
+    .search{
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .search input{
+      width:100%;
+      padding:10px 10px;
+      font-family: var(--mono);
+      background: rgba(0,0,0,.22);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      outline:none;
+      box-sizing:border-box;
+    }
+
+    #users{
+      padding: 10px 10px 12px 10px;
       overflow:auto;
-      background:#070a08;
+      min-height:0;
+      max-height:100%;
     }
-    .side-title{color:#3bbf3b;font-size:13px;margin-bottom:10px}
     .user{
       display:flex;
       align-items:center;
       gap:10px;
-      padding:6px 6px;
-      border-radius:8px;
+      padding: 8px 10px;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.03);
+      background: rgba(0,0,0,0.12);
+      margin-bottom: 8px;
     }
-    .dot{
-      width:10px;height:10px;border-radius:999px;background:#a9ff9f;flex:0 0 auto;
-      box-shadow:0 0 10px rgba(169,255,159,0.25);
+    .user .udot{
+      width:10px;height:10px;border-radius:999px;
+      box-shadow: 0 0 14px rgba(0,0,0,.25);
+      flex:0 0 auto;
     }
-    .uname{
-      font-weight:700;
-      color:#a9ff9f;
-      word-break:break-word;
-      font-size:13px;
+    .user .uname{
+      font-weight: 800;
+      font-size: 13px;
+      word-break: break-word;
     }
-    .bar{
-      grid-column:1 / span 2;
-      grid-row:2;
-      padding:10px 12px;
-      border-top:1px solid #163016;
+
+    .bottombar{
       display:grid;
-      grid-template-columns:160px 1fr 120px;
-      gap:10px;
-      align-items:center;
-      background:#070a08
+      grid-template-columns: 180px 1fr 130px;
+      gap: 12px;
+      padding: 12px 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(10px);
     }
-    input{width:100%;padding:10px;background:#050705;border:1px solid #163016;color:#a9ff9f;
-      outline:none;border-radius:8px;font-size:14px}
-    button{padding:10px 12px;background:#0e1a10;border:1px solid #1f3a22;color:#a9ff9f;border-radius:8px;
-      cursor:pointer;font-weight:600}
-    button:hover{filter:brightness(1.15)}
-    .sys{color:#3bbf3b}
-    .t{color:#2f7f2f}
-    .nick{font-weight:700}
-    .msg{color:#a9ff9f}
-    .topic{color:#a9ff9f;font-weight:700}
-    .hint{color:#3bbf3b}
+    .bottombar input{
+      width:100%;
+      padding: 12px 12px;
+      font-family: var(--mono);
+      background: rgba(0,0,0,.22);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      color: var(--text);
+      outline:none;
+      box-sizing:border-box;
+    }
+    .bottombar button{
+      padding: 12px 12px;
+      font-family: var(--mono);
+      font-weight: 800;
+      color: var(--bg);
+      background: var(--accent);
+      border: 1px solid rgba(0,0,0,.2);
+      border-radius: 12px;
+      cursor: pointer;
+    }
+    .bottombar button:hover{ filter: brightness(1.08); }
+
+    /* CRT theme extra (subtle) */
+    body.theme-crt .bg::after{ opacity: .16; }
+    body.theme-crt .topbar{ box-shadow: 0 10px 28px rgba(255,214,107,.07), var(--shadow); }
+
+    /* Responsive */
+    @media (max-width: 980px){
+      .main{ grid-template-columns: 1fr; }
+      .controls{ min-width: 0; }
+      .brand{ min-width: 0; }
+      .status{ display:none; }
+    }
   </style>
 </head>
-<body>
-  <div class="top">
-    <span class="topic">iLoad.lt</span> — <span id="topic"></span>
-    <span class="hint"> | /help /nick /who /roll /me /topic /history /clear</span>
-  </div>
+<body class="theme-cyber">
+  <div class="bg"></div>
 
-  <div class="wrap">
-    <div id="log"></div>
+  <div class="app">
+    <div class="topbar">
+      <div class="brand">
+        <div class="title">iLoad.lt</div>
+        <div class="topic" id="topic">Bendras kanalas</div>
+      </div>
 
-    <div id="side">
-      <div class="side-title">Online: <span id="onlineCount">0</span></div>
-      <div id="users"></div>
+      <div class="status">
+        <span class="pill">
+          <span id="connDot" class="dot"></span>
+          <span id="connText">Disconnected</span>
+        </span>
+        <span class="pill">Komandos: <span style="color:var(--text)">/help</span>, <span style="color:var(--text)">/nick</span>, <span style="color:var(--text)">/roll</span>, <span style="color:var(--text)">/topic</span>, <span style="color:var(--text)">/history</span></span>
+      </div>
+
+      <div class="controls">
+        <label class="chk" title="Slėpti sistemines žinutes pagrindiniame lange (prisijungė/atsijungė ir pan.)">
+          <input id="hideSys" type="checkbox"/>
+          <span>Hide sys</span>
+        </label>
+        <select id="theme">
+          <option value="theme-cyber">Cyber</option>
+          <option value="theme-glass">Glass</option>
+          <option value="theme-matrix">Matrix</option>
+          <option value="theme-crt">CRT</option>
+        </select>
+      </div>
     </div>
 
-    <div class="bar">
+    <div class="main">
+      <div class="panel">
+        <div id="log"></div>
+      </div>
+
+      <div class="panel">
+        <div class="sidehead">
+          <span>Online: <b id="onlineCount">0</b></span>
+          <span id="onlineHint">live</span>
+        </div>
+        <div class="search">
+          <input id="userSearch" placeholder="ieškoti vartotojo..." />
+        </div>
+        <div id="users"></div>
+      </div>
+    </div>
+
+    <div class="bottombar">
       <input id="nick" placeholder="nick (pvz. Tomas)" maxlength="24"/>
       <input id="msg" placeholder="rašyk žinutę ir Enter..." maxlength="300"/>
       <button id="btn">Siųsti</button>
@@ -161,6 +443,16 @@ HTML = r"""<!doctype html>
 
   const usersEl = document.getElementById("users");
   const onlineCountEl = document.getElementById("onlineCount");
+  const userSearchEl = document.getElementById("userSearch");
+
+  const connDot = document.getElementById("connDot");
+  const connText = document.getElementById("connText");
+
+  const hideSysEl = document.getElementById("hideSys");
+  const themeEl = document.getElementById("theme");
+
+  let hideSys = false;
+  let allUsers = [];
 
   function esc(s){
     return (s ?? "").toString()
@@ -168,15 +460,30 @@ HTML = r"""<!doctype html>
       .replaceAll('"',"&quot;").replaceAll("'","&#39;");
   }
 
-  function addHtml(html){
+  function setConn(ok){
+    if(ok){
+      connDot.classList.add("ok");
+      connText.textContent = "Connected";
+    }else{
+      connDot.classList.remove("ok");
+      connText.textContent = "Disconnected";
+    }
+  }
+
+  function addLineHtml(html){
     const div = document.createElement("div");
+    div.className = "line";
     div.innerHTML = html;
     log.appendChild(div);
     log.scrollTop = log.scrollHeight;
   }
 
-  function clearLog(){
-    log.innerHTML = "";
+  function clearLog(){ log.innerHTML = ""; }
+
+  function applyUserFilter(){
+    const q = (userSearchEl.value || "").trim().toLowerCase();
+    const items = allUsers.filter(u => (u.nick || "").toLowerCase().includes(q));
+    renderUsers(items);
   }
 
   function renderUsers(items){
@@ -192,7 +499,7 @@ HTML = r"""<!doctype html>
       const row = document.createElement("div");
       row.className = "user";
       row.innerHTML = `
-        <span class="dot" style="background:${color}"></span>
+        <span class="udot" style="background:${color}"></span>
         <span class="uname" style="color:${color}">${nick}</span>
       `;
       usersEl.appendChild(row);
@@ -209,13 +516,16 @@ HTML = r"""<!doctype html>
 
   function connect(){
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
-    addHtml(`<span class="sys">[sys]</span> jungiamasi...`);
+
+    addLineHtml(`<span class="sys">[sys]</span> jungiamasi...`);
+    setConn(false);
+
     ws = new WebSocket(wsUrl());
 
-    ws.onopen = () => addHtml(`<span class="sys">[sys]</span> prisijungta.`);
+    ws.onopen = () => { setConn(true); addLineHtml(`<span class="sys">[sys]</span> prisijungta.`); };
     ws.onmessage = (ev) => {
       let o = null;
-      try { o = JSON.parse(ev.data); } catch { addHtml(esc(ev.data)); return; }
+      try { o = JSON.parse(ev.data); } catch { addLineHtml(esc(ev.data)); return; }
 
       if(o.type === "topic"){
         topicEl.textContent = o.text || "";
@@ -223,13 +533,14 @@ HTML = r"""<!doctype html>
       }
 
       if(o.type === "users"){
-        renderUsers(o.items || []);
+        allUsers = o.items || [];
+        applyUserFilter();
         return;
       }
 
       if(o.type === "ctrl" && o.action === "clear"){
         clearLog();
-        addHtml(`<span class="sys">[sys]</span> ekranas išvalytas.`);
+        addLineHtml(`<span class="sys">[sys]</span> ekranas išvalytas.`);
         return;
       }
 
@@ -237,7 +548,7 @@ HTML = r"""<!doctype html>
         clearLog();
         if(o.topic) topicEl.textContent = o.topic;
         (o.items || []).forEach(renderItem);
-        addHtml(`<span class="sys">[sys]</span> istorija įkelta (${(o.items||[]).length} žinučių).`);
+        if(!hideSys) addLineHtml(`<span class="sys">[sys]</span> istorija įkelta (${(o.items||[]).length} žinučių).`);
         return;
       }
 
@@ -245,28 +556,35 @@ HTML = r"""<!doctype html>
     };
 
     ws.onclose = () => {
-      addHtml(`<span class="sys">[sys]</span> ryšys nutrūko, reconnect...`);
+      setConn(false);
+      if(!hideSys) addLineHtml(`<span class="sys">[sys]</span> ryšys nutrūko, reconnect...`);
       if (!timer) timer = setInterval(connect, 1500);
     };
   }
 
   function renderItem(o){
     const t = esc(o.t || "");
+    if(o.type === "sys"){
+      if(hideSys) return;
+      addLineHtml(`<span class="t">[${t}]</span> <span class="sys">${esc(o.text || "")}</span>`);
+      return;
+    }
     if(o.type === "msg"){
       const nick = esc(o.nick || "guest");
       const text = esc(o.text || "");
       const color = esc(o.color || "#a9ff9f");
-      addHtml(`<span class="t">[${t}]</span> <span class="nick" style="color:${color}">${nick}</span>: <span class="msg">${text}</span>`);
+      addLineHtml(`<span class="t">[${t}]</span> <span class="nick" style="color:${color}">${nick}</span>: <span class="msg">${text}</span>`);
       return;
     }
     if(o.type === "me"){
       const nick = esc(o.nick || "guest");
       const text = esc(o.text || "");
       const color = esc(o.color || "#a9ff9f");
-      addHtml(`<span class="t">[${t}]</span> <span class="nick" style="color:${color}">*</span> <span class="nick" style="color:${color}">${nick}</span> <span class="msg">${text}</span>`);
+      addLineHtml(`<span class="t">[${t}]</span> <span class="me" style="color:${color}">* ${nick} ${text}</span>`);
       return;
     }
-    addHtml(`<span class="t">[${t}]</span> <span class="sys">${esc(o.text || "")}</span>`);
+    // fallback
+    if(!hideSys) addLineHtml(`<span class="t">[${t}]</span> <span class="sys">${esc(o.text || "")}</span>`);
   }
 
   function send(){
@@ -274,21 +592,47 @@ HTML = r"""<!doctype html>
     const text = msgEl.value.trim();
     if(!text) return;
     if(!ws || ws.readyState !== WebSocket.OPEN){
-      addHtml(`<span class="sys">[sys]</span> dar neprisijungta.`);
+      if(!hideSys) addLineHtml(`<span class="sys">[sys]</span> dar neprisijungta.`);
       return;
     }
     ws.send(JSON.stringify({nick, text}));
     msgEl.value = "";
   }
 
+  // UI bindings
   btn.onclick = send;
   msgEl.addEventListener("keydown", (e) => { if(e.key === "Enter") send(); });
+
+  userSearchEl.addEventListener("input", applyUserFilter);
+
+  hideSysEl.addEventListener("change", () => {
+    hideSys = !!hideSysEl.checked;
+    localStorage.setItem("hideSys", hideSys ? "1" : "0");
+  });
+
+  themeEl.addEventListener("change", () => {
+    document.body.className = themeEl.value;
+    localStorage.setItem("theme", themeEl.value);
+  });
+
+  // restore preferences
+  (function initPrefs(){
+    const t = localStorage.getItem("theme");
+    if(t){
+      document.body.className = t;
+      themeEl.value = t;
+    }
+    const hs = localStorage.getItem("hideSys");
+    hideSys = hs === "1";
+    hideSysEl.checked = hideSys;
+  })();
 
   connect();
 </script>
 </body>
 </html>
 """
+
 
 # =========================
 # MODELIS

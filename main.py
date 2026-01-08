@@ -515,7 +515,8 @@ async def ws_endpoint(ws: WebSocket):
     await send_userlist(ws)
     await broadcast_userlist()  # kad visi pamatytų naują žmogų
 
-    await sysmsg(f"{u.nick} prisijungė.", also_history=True)
+# (nebebrandinam join žinutės, nes yra Online sąrašas)
+# await sysmsg(f"{u.nick} prisijungė.", also_history=True)
 
     try:
         while True:
@@ -548,5 +549,5 @@ async def ws_endpoint(ws: WebSocket):
     finally:
         left_user = await remove_client(ws)
         if left_user:
-            await sysmsg(f"{left_user.nick} atsijungė.", also_history=True)
-            await broadcast_userlist()
+    # nebebrandinam leave žinutės, nes yra Online sąrašas
+           await broadcast_userlist()

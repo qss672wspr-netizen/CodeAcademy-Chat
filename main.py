@@ -4,8 +4,7 @@ import re
 import time
 from collections import deque
 from dataclasses import dataclass
-from html import escape
-from typing import Deque, Dict, Optional, Set, Tuple
+from typing import Deque, Dict, Optional, Set
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, PlainTextResponse
@@ -15,7 +14,7 @@ app = FastAPI()
 # =========================
 # KONFIGŪRACIJA
 # =========================
-HISTORY_LIMIT = 250  # kiek žinučių laikom istorijoje
+HISTORY_LIMIT = 250
 
 COLOR_PALETTE = [
     "#7CFF6B", "#6BE4FF", "#FF6BE8", "#FFD66B", "#6B9BFF",
@@ -37,7 +36,7 @@ topic: str = "Bendras kanalas"
 state_lock = asyncio.Lock()
 
 # =========================
-# HTML (terminalinis UI)
+# HTML (terminalinis UI + ONLINE panelis)
 # =========================
 HTML = r"""<!doctype html>
 <html lang="lt">
@@ -49,16 +48,62 @@ HTML = r"""<!doctype html>
     body{margin:0;background:#0b0f0c;color:#7cff6b;
       font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Courier New",monospace;}
     .top{padding:12px 16px;border-bottom:1px solid #163016;color:#3bbf3b;font-size:14px}
-    .wrap{display:grid;grid-template-rows:1fr auto;height:calc(100vh - 45px)}
-    #log{padding:14px 16px;overflow:auto;white-space:pre-wrap;line-height:1.35}
-    .bar{padding:10px 12px;border-top:1px solid #163016;display:grid;grid-template-columns:160px 1fr 120px;
-      gap:10px;align-items:center;background:#070a08}
+    .wrap{
+      display:grid;
+      grid-template-columns: 1fr 260px;
+      grid-template-rows: 1fr auto;
+      height: calc(100vh - 45px);
+    }
+    #log{
+      grid-column:1;
+      grid-row:1;
+      padding:14px 16px;
+      overflow:auto;
+      white-space:pre-wrap;
+      line-height:1.35;
+      border-right: 1px solid #163016;
+    }
+    #side{
+      grid-column:2;
+      grid-row:1;
+      padding:12px 12px;
+      overflow:auto;
+      background:#070a08;
+    }
+    .side-title{color:#3bbf3b;font-size:13px;margin-bottom:10px}
+    .user{
+      display:flex;
+      align-items:center;
+      gap:10px;
+      padding:6px 6px;
+      border-radius:8px;
+    }
+    .dot{
+      width:10px;height:10px;border-radius:999px;background:#a9ff9f;flex:0 0 auto;
+      box-shadow:0 0 10px rgba(169,255,159,0.25);
+    }
+    .uname{
+      font-weight:700;
+      color:#a9ff9f;
+      word-break:break-word;
+      font-size:13px;
+    }
+    .bar{
+      grid-column:1 / span 2;
+      grid-row:2;
+      padding:10px 12px;
+      border-top:1px solid #163016;
+      display:grid;
+      grid-template-columns:160px 1fr 120px;
+      gap:10px;
+      align-items:center;
+      background:#070a08
+    }
     input{width:100%;padding:10px;background:#050705;border:1px solid #163016;color:#a9ff9f;
       outline:none;border-radius:8px;font-size:14px}
     button{padding:10px 12px;background:#0e1a10;border:1px solid #1f3a22;color:#a9ff9f;border-radius:8px;
       cursor:pointer;font-weight:600}
     button:hover{filter:brightness(1.15)}
-    .dim{color:#3bbf3b}
     .sys{color:#3bbf3b}
     .t{color:#2f7f2f}
     .nick{font-weight:700}
@@ -70,10 +115,17 @@ HTML = r"""<!doctype html>
 <body>
   <div class="top">
     <span class="topic">iLoad.lt</span> — <span id="topic"></span>
-    <span class="hint"> | Komandos: /help, /nick, /who, /roll, /me, /topic, /history, /clear</span>
+    <span class="hint"> | /help /nick /who /roll /me /topic /history /clear</span>
   </div>
+
   <div class="wrap">
     <div id="log"></div>
+
+    <div id="side">
+      <div class="side-title">Online: <span id="onlineCount">0</span></div>
+      <div id="users"></div>
+    </div>
+
     <div class="bar">
       <input id="nick" placeholder="nick (pvz. Tomas)" maxlength="24"/>
       <input id="msg" placeholder="rašyk žinutę ir Enter..." maxlength="300"/>
@@ -87,6 +139,9 @@ HTML = r"""<!doctype html>
   const msgEl  = document.getElementById("msg");
   const btn    = document.getElementById("btn");
   const topicEl = document.getElementById("topic");
+
+  const usersEl = document.getElementById("users");
+  const onlineCountEl = document.getElementById("onlineCount");
 
   function esc(s){
     return (s ?? "").toString()
@@ -103,6 +158,26 @@ HTML = r"""<!doctype html>
 
   function clearLog(){
     log.innerHTML = "";
+  }
+
+  function renderUsers(items){
+    const arr = Array.isArray(items) ? items.slice() : [];
+    arr.sort((a,b) => (a.nick||"").localeCompare(b.nick||"", "lt"));
+
+    onlineCountEl.textContent = String(arr.length);
+    usersEl.innerHTML = "";
+
+    for(const u of arr){
+      const nick = esc(u.nick || "guest");
+      const color = esc(u.color || "#a9ff9f");
+      const row = document.createElement("div");
+      row.className = "user";
+      row.innerHTML = `
+        <span class="dot" style="background:${color}"></span>
+        <span class="uname" style="color:${color}">${nick}</span>
+      `;
+      usersEl.appendChild(row);
+    }
   }
 
   function wsUrl(){
@@ -125,6 +200,11 @@ HTML = r"""<!doctype html>
 
       if(o.type === "topic"){
         topicEl.textContent = o.text || "";
+        return;
+      }
+
+      if(o.type === "users"){
+        renderUsers(o.items || []);
         return;
       }
 
@@ -167,12 +247,11 @@ HTML = r"""<!doctype html>
       addHtml(`<span class="t">[${t}]</span> <span class="nick" style="color:${color}">*</span> <span class="nick" style="color:${color}">${nick}</span> <span class="msg">${text}</span>`);
       return;
     }
-    // sys
     addHtml(`<span class="t">[${t}]</span> <span class="sys">${esc(o.text || "")}</span>`);
   }
 
   function send(){
-    const nick = (nickEl.value || "").trim();    // serveris validuos / koreguos
+    const nick = (nickEl.value || "").trim();
     const text = msgEl.value.trim();
     if(!text) return;
     if(!ws || ws.readyState !== WebSocket.OPEN){
@@ -193,7 +272,7 @@ HTML = r"""<!doctype html>
 """
 
 # =========================
-# DUOMENŲ MODELIS
+# MODELIS
 # =========================
 @dataclass
 class User:
@@ -207,19 +286,20 @@ def ts() -> str:
 def make_default_nick() -> str:
     return f"guest{random.randint(1000, 9999)}"
 
+def valid_nick(n: str) -> bool:
+    return bool(NICK_RE.match(n))
+
+def used_colors() -> Set[str]:
+    return {u.color for u in user_state.values()}
+
 def alloc_color(used: Set[str]) -> str:
     for c in COLOR_PALETTE:
         if c not in used:
             return c
-    # jei spalvų neužtenka – fallback į pseudo-unikalią spalvą
     hue = random.randint(0, 359)
     return f"hsl({hue}, 90%, 65%)"
 
-def valid_nick(n: str) -> bool:
-    return bool(NICK_RE.match(n))
-
 async def push_history(item: dict):
-    # istorijoje laikome jau paruoštą struktūrą klientui
     history.append(item)
 
 async def send(ws: WebSocket, obj: dict):
@@ -241,7 +321,6 @@ async def remove_client(ws: WebSocket):
     async with state_lock:
         clients.discard(ws)
         u = user_state.pop(ws, None)
-        # spalvą atlaisvinsim automatiškai, nes used skaičiuojam dinamiškai
     try:
         await ws.close()
     except Exception:
@@ -254,8 +333,19 @@ async def sysmsg(text: str, also_history: bool = True):
         await push_history(item)
     await broadcast(item)
 
-def used_colors() -> Set[str]:
-    return {u.color for u in user_state.values()}
+# =========================
+# REALTIME ONLINE LIST
+# =========================
+def build_userlist_items():
+    # sortinsim klientuose, bet čia irgi tvarkingai
+    items = [{"nick": u.nick, "color": u.color} for u in user_state.values()]
+    return items
+
+async def broadcast_userlist():
+    await broadcast({"type": "users", "items": build_userlist_items()})
+
+async def send_userlist(ws: WebSocket):
+    await send(ws, {"type": "users", "items": build_userlist_items()})
 
 # =========================
 # ROUTES
@@ -275,7 +365,7 @@ HELP_TEXT = (
     "Komandos:\n"
     "  /help               - pagalba\n"
     "  /nick VARDAS        - pasikeisti slapyvardį\n"
-    "  /who                - kas online (skaičius + vardai)\n"
+    "  /who                - kas online (vardai)\n"
     "  /topic TEKSTAS      - pakeisti temą (visiems)\n"
     "  /topic              - parodyti temą\n"
     "  /history [N]        - atsiųsti paskutines N žinučių (default 50)\n"
@@ -284,12 +374,12 @@ HELP_TEXT = (
     "  /roll [NdM]         - kauliukas (pvz. /roll 2d6)\n"
     "  /flip               - monetos metimas\n"
     "  /time               - serverio laikas\n"
-    "  /shrug              - prideda ¯\\_(ツ)_/¯ prie tavo žinutės\n"
+    "  /shrug              - prideda ¯\\_(ツ)_/¯\n"
     "  /color              - parodo tavo spalvą\n"
-    "  /color new          - priskiria kitą laisvą spalvą (jei yra)\n"
+    "  /color new          - priskiria kitą spalvą\n"
 )
 
-async def handle_command(ws: WebSocket, nick_from_client: str, text: str) -> bool:
+async def handle_command(ws: WebSocket, text: str) -> bool:
     text = text.strip()
     u = user_state.get(ws)
     if not u:
@@ -302,17 +392,19 @@ async def handle_command(ws: WebSocket, nick_from_client: str, text: str) -> boo
     if text.startswith("/nick "):
         new = text.split(" ", 1)[1].strip()
         if not valid_nick(new):
-            await send(ws, {"type": "sys", "t": ts(), "text": "Netinkamas nick. Leista: raidės/skaičiai/tarpas/_-., iki 24."})
+            await send(ws, {"type": "sys", "t": ts(),
+                            "text": "Netinkamas nick. Leista: raidės/skaičiai/tarpas/_-., iki 24."})
             return True
         old = u.nick
         u.nick = new
         await sysmsg(f"{old} dabar yra {u.nick}.", also_history=True)
+        await broadcast_userlist()
         return True
 
     if text == "/who":
         async with state_lock:
             names = [user_state[c].nick for c in clients if c in user_state]
-        await send(ws, {"type": "sys", "t": ts(), "text": f"Online ({len(names)}): " + ", ".join(sorted(set(names)))})
+        await send(ws, {"type": "sys", "t": ts(), "text": "Online: " + ", ".join(sorted(set(names)))})
         return True
 
     if text.startswith("/topic"):
@@ -361,11 +453,7 @@ async def handle_command(ws: WebSocket, nick_from_client: str, text: str) -> boo
         sides = max(2, min(sides, 1000))
         rolls = [random.randint(1, sides) for _ in range(n)]
         total = sum(rolls)
-        item = {
-            "type": "sys",
-            "t": ts(),
-            "text": f"{u.nick} meta {n}d{sides}: {rolls} (viso {total})"
-        }
+        item = {"type": "sys", "t": ts(), "text": f"{u.nick} meta {n}d{sides}: {rolls} (viso {total})"}
         await push_history(item)
         await broadcast(item)
         return True
@@ -382,7 +470,6 @@ async def handle_command(ws: WebSocket, nick_from_client: str, text: str) -> boo
         return True
 
     if text.startswith("/shrug"):
-        # Leidžiam naudoti kaip: "/shrug tekstas"
         parts = text.split(" ", 1)
         extra = (" " + parts[1].strip()) if len(parts) == 2 else ""
         item = {"type": "msg", "t": ts(), "nick": u.nick, "color": u.color, "text": f"{extra} ¯\\_(ツ)_/¯".strip()}
@@ -396,12 +483,12 @@ async def handle_command(ws: WebSocket, nick_from_client: str, text: str) -> boo
             await send(ws, {"type": "sys", "t": ts(), "text": f"Tavo spalva: {u.color}"})
             return True
         if parts[1].strip().lower() == "new":
-            # priskiriam kitą laisvą spalvą (jei yra)
             used = used_colors() - {u.color}
             u.color = alloc_color(used)
             item = {"type": "sys", "t": ts(), "text": f"{u.nick} pasikeitė spalvą."}
             await push_history(item)
             await broadcast(item)
+            await broadcast_userlist()
             return True
 
     return False
@@ -422,11 +509,12 @@ async def ws_endpoint(ws: WebSocket):
         )
         user_state[ws] = u
 
-    # Išsiunčiam temą + istoriją
+    # Tema + istorija + online sąrašas
     await send(ws, {"type": "topic", "text": topic})
     await send(ws, {"type": "history", "topic": topic, "items": list(history)})
+    await send_userlist(ws)
+    await broadcast_userlist()  # kad visi pamatytų naują žmogų
 
-    # Prisijungimo pranešimas (į istoriją ir visiems)
     await sysmsg(f"{u.nick} prisijungė.", also_history=True)
 
     try:
@@ -437,21 +525,20 @@ async def ws_endpoint(ws: WebSocket):
             if not text:
                 continue
 
-            # jeigu klientas įvedė normalų nick (ne komanda), galim jį pritaikyti kaip „pirmą kartą“
-            # bet tik jei dar guest*
-            if nick_in and valid_nick(nick_in):
-                if u.nick.startswith("guest"):
-                    old = u.nick
-                    u.nick = nick_in
-                    await sysmsg(f"{old} dabar yra {u.nick}.", also_history=True)
+            # jei žmogus įvedė nick ir dar guest* — pritaikom
+            if nick_in and valid_nick(nick_in) and u.nick.startswith("guest"):
+                old = u.nick
+                u.nick = nick_in
+                await sysmsg(f"{old} dabar yra {u.nick}.", also_history=True)
+                await broadcast_userlist()
 
             # komandos
             if text.startswith("/"):
-                handled = await handle_command(ws, nick_in, text)
+                handled = await handle_command(ws, text)
                 if handled:
                     continue
 
-            # paprasta žinutė
+            # žinutė
             item = {"type": "msg", "t": ts(), "nick": u.nick, "color": u.color, "text": text}
             await push_history(item)
             await broadcast(item)
@@ -462,3 +549,4 @@ async def ws_endpoint(ws: WebSocket):
         left_user = await remove_client(ws)
         if left_user:
             await sysmsg(f"{left_user.nick} atsijungė.", also_history=True)
+            await broadcast_userlist()

@@ -17,9 +17,28 @@ app = FastAPI()
 HISTORY_LIMIT = 250
 
 COLOR_PALETTE = [
-    "#7CFF6B", "#6BE4FF", "#FF6BE8", "#FFD66B", "#6B9BFF",
-    "#FF6B6B", "#6BFFB8", "#B56BFF", "#FF9F6B", "#6BFF6B",
-    "#9CFF6B", "#6BFFD9", "#6B7CFF", "#FF6B9C", "#C9FF6B",
+    "#E6194B",  # red
+    "#3CB44B",  # green
+    "#FFE119",  # yellow
+    "#0082C8",  # blue
+    "#F58231",  # orange
+    "#911EB4",  # purple
+    "#46F0F0",  # cyan
+    "#F032E6",  # magenta
+    "#D2F53C",  # lime
+    "#FABEBE",  # pink
+    "#008080",  # teal
+    "#E6BEFF",  # lavender
+    "#AA6E28",  # brown
+    "#FFFAC8",  # light yellow
+    "#800000",  # maroon
+    "#AFFFc3",  # mint
+    "#808000",  # olive
+    "#FFD8B1",  # apricot
+    "#000080",  # navy
+    "#808080",  # gray
+    "#000000",  # black
+    "#FFFFFF",  # white (bus ryški, bet matysis ant juodo fono)
 ]
 
 NICK_RE = re.compile(r"^[A-Za-z0-9ĄČĘĖĮŠŲŪŽąčęėįšųūž_\-\. ]{1,24}$")
@@ -293,9 +312,58 @@ def used_colors() -> Set[str]:
     return {u.color for u in user_state.values()}
 
 def alloc_color(used: Set[str]) -> str:
+    # Pirmiausia – paimam iš aiškiai skirtingos paletės
     for c in COLOR_PALETTE:
         if c not in used:
             return c
+
+    # Jei paletė baigėsi – generuojam naują spalvą (HSV per HSL string)
+    # Naudojam "golden angle", kad naujos spalvos būtų tolygiai pasiskirsčiusios per ratą.
+    golden_angle = 137.50776405
+
+    # Iš used ištraukiam jau naudotų hsl(...) atspalvius, jei tokių buvo
+    # (jei nenaudojat hsl, vis tiek veiks – tiesiog bus mažiau apribojimų)
+    def parse_hue(s: str):
+        if s.startswith("hsl(") and s.endswith(")"):
+            try:
+                inside = s[4:-1]
+                h = float(inside.split(",")[0].strip())
+                return h % 360
+            except Exception:
+                return None
+        return None
+
+    used_hues = []
+    for c in used:
+        h = parse_hue(c)
+        if h is not None:
+            used_hues.append(h)
+
+    # Generuojam kelis kandidatus ir pasirenkam, kurio hue toliausiai nuo esamų
+    best = None
+    best_min_dist = -1.0
+
+    base = random.random() * 360.0
+    for i in range(1, 40):
+        h = (base + i * golden_angle) % 360.0
+
+        # minimalus atstumas iki jau naudotų hue (jei jų turim)
+        if used_hues:
+            min_dist = min(min(abs(h - uh), 360 - abs(h - uh)) for uh in used_hues)
+        else:
+            min_dist = 180.0
+
+        if min_dist > best_min_dist:
+            best_min_dist = min_dist
+            best = h
+
+        # jeigu jau radom tikrai gerą atstumą – užtenka
+        if best_min_dist >= 25:
+            break
+
+    # S ir L parinkti taip, kad ant juodo fono būtų ryšku ir aišku
+    return f"hsl({best:.0f}, 90%, 60%)"
+
     hue = random.randint(0, 359)
     return f"hsl({hue}, 90%, 65%)"
 

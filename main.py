@@ -23,6 +23,7 @@ import random
 import re
 import sqlite3
 import time
+import logging
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -33,6 +34,14 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 app = FastAPI()
+
+# =====================================
+# LOGGING
+# =====================================
+logger = logging.getLogger("hestiochat")
+if not logger.handlers:
+    logging.basicConfig(level=logging.INFO)
+
 
 # =====================================
 # TIMEZONE (Vilnius)
@@ -1270,6 +1279,11 @@ async def handle_command(ws: WebSocket, active_room: str, text: str) -> bool:
 # =====================================
 # HTTP ROUTES
 # =====================================
+@app.head("/", response_class=PlainTextResponse)
+def home_head():
+    return "OK"
+
+
 @app.get("/", response_class=HTMLResponse)
 def home():
     return HTML
@@ -2865,6 +2879,7 @@ async def ws_endpoint(ws: WebSocket):
         lang = "lt"
 
     await ws.accept()
+    logger.info("WS accepted nick=%s lang=%s", nick, lang)
 
     if not valid_nick(nick):
         await ws.send_json({"type": "error", "code": "BAD_NICK", "text": t(lang, "BAD_NICK")})
@@ -2899,7 +2914,18 @@ async def ws_endpoint(ws: WebSocket):
 
     try:
         while True:
-            data = await ws.receive_json()
+            # Use receive() + json.loads to avoid silent JSON decode disconnects
+            raw = await ws.receive()
+            if raw.get("type") == "websocket.disconnect":
+                break
+            text = raw.get("text")
+            if not text:
+                continue
+            try:
+                data = json.loads(text)
+            except Exception:
+                # Ignore non-JSON payloads (some proxies/extensions can send them)
+                continue
             if not isinstance(data, dict):
                 continue
 
@@ -2964,13 +2990,13 @@ async def ws_endpoint(ws: WebSocket):
                 continue
 
     except WebSocketDisconnect:
-        pass
-    except Exception:
-        # Any unexpected error -> disconnect cleanly
-        pass
+        logger.info("WebSocketDisconnect nick=%s", nick)
+    except Exception as e:
+        logger.exception("WS error nick=%s: %s", nick, e)
     finally:
         try:
             hb_task.cancel()
         except Exception:
             pass
+        logger.info("WS closing nick=%s", nick)
         await disconnect_ws(ws)

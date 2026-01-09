@@ -671,7 +671,7 @@ async def handle_command(ws: WebSocket, u: User, active_room: str, text: str) ->
 # ----------------- HTTP routes -----------------
 @app.get("/", response_class=HTMLResponse)
 async def home():
-    return HTML
+    return HTML.replace("__LOGO_DARK__", LOGO_DARK).replace("__LOGO_WATERMARK__", LOGO_WATERMARK)
 
 @app.get("/health", response_class=PlainTextResponse)
 async def health():
@@ -906,13 +906,13 @@ HTML = r"""<!doctype html>
   </style>
 </head>
 <body>
-  <div class="wm"><img src="""" + LOGO_WATERMARK + """" alt="wm"/></div>
+  <div class="wm"><img src="__LOGO_WATERMARK__" alt="wm"/></div>
 
   <div id="lobby">
     <div class="card">
       <div class="cardHead">
         <div class="brand">
-          <img src="""" + LOGO_DARK + """" alt="logo"/>
+          <img src="__LOGO_DARK__" alt="logo"/>
           <div>
             <div><b>HestioRooms</b> <span class="small">Step 5 – SQLite + tools</span></div>
             <div class="small">Kanalai, istorija, pin/edit/del/react</div>
@@ -948,7 +948,7 @@ HTML = r"""<!doctype html>
   <div class="wrap" id="app" style="display:none;">
     <div class="top">
       <div class="brand">
-        <img src="""" + LOGO_DARK + """" alt="logo"/>
+        <img src="__LOGO_DARK__" alt="logo"/>
         <b>HestioRooms</b>
         <span class="topic" id="topic">#main</span>
       </div>

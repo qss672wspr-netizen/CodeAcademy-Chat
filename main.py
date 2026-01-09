@@ -7,11 +7,18 @@ from typing import Dict, Optional, Set
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 
 # ------------------------------------------------------------
-# STEP 3: One shared room (#main) with broadcast + online list
-# Keeps Step 2 nick gate + /check_nick
-# Goal: when two browsers join, they SEE each other's messages.
+# STEP 3B: Same as Step 3 (broadcast + online), plus branding:
+# - Optional logo at /static/logo.png
+# - Optional background at /static/bg.jpg (or bg.png / bg.webp if you change CSS)
+#
+# How to use:
+# 1) Create folder "static" in your repo root
+# 2) Put logo file: static/logo.png
+# 3) (Optional) Put background: static/bg.jpg
+# 4) Deploy. If files are missing, UI still works (logo hidden; bg falls back).
 # ------------------------------------------------------------
 
 app = FastAPI()
@@ -21,12 +28,14 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
+# Serve ./static at /static
+app.mount("/static", StaticFiles(directory="static", html=False), name="static")
+
 NICK_RE = re.compile(r"^[A-Za-z0-9ĄČĘĖĮŠŲŪŽąčęėįšųūž_\-\. ]{2,24}$")
 
 state_lock = asyncio.Lock()
 clients: Set[WebSocket] = set()
 nick_by_ws: Dict[WebSocket, str] = {}
-# For /check_nick + uniqueness
 online_nicks_cf: Set[str] = set()
 
 def ts() -> str:
@@ -35,30 +44,24 @@ def ts() -> str:
 def valid_nick(n: str) -> bool:
     return bool(NICK_RE.match((n or "").strip()))
 
-def safe_send_text(ws: WebSocket, obj: dict) -> None:
-    # helper used only inside async funcs, but we sometimes build tasks; keep as sync wrapper for readability
-    pass
-
 async def ws_send(ws: WebSocket, obj: dict) -> None:
     try:
         await ws.send_text(json.dumps(obj, ensure_ascii=False, separators=(",", ":")))
     except Exception:
-        # ignore send failures; cleanup will happen elsewhere
         pass
 
 async def broadcast(obj: dict) -> None:
     dead = []
+    payload = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
     for w in list(clients):
         try:
-            await w.send_text(json.dumps(obj, ensure_ascii=False, separators=(",", ":")))
+            await w.send_text(payload)
         except Exception:
             dead.append(w)
-    if dead:
-        for w in dead:
-            await disconnect(w)
+    for w in dead:
+        await disconnect(w)
 
 async def broadcast_users() -> None:
-    # We don't broadcast join/leave messages to main log; only update online list
     async with state_lock:
         items = sorted(set(nick_by_ws.values()), key=lambda x: x.casefold())
     await broadcast({"type": "users", "t": ts(), "items": items})
@@ -73,7 +76,6 @@ async def disconnect(ws: WebSocket) -> None:
         await ws.close()
     except Exception:
         pass
-    # Update user list
     await broadcast_users()
 
 async def heartbeat(ws: WebSocket) -> None:
@@ -89,7 +91,7 @@ HTML = r"""<!doctype html>
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>Step3 Broadcast</title>
+  <title>HestioRooms – #main</title>
   <style>
     :root{
       --bg:#0b0f14; --panel:rgba(255,255,255,.05); --border:rgba(255,255,255,.12);
@@ -97,24 +99,57 @@ HTML = r"""<!doctype html>
       --mono:ui-monospace, Menlo, Consolas, monospace;
       --radius:14px;
     }
-    body{ margin:0; background:var(--bg); color:var(--text); font-family:var(--mono); height:100vh; overflow:hidden; }
+    body{
+      margin:0; color:var(--text); font-family:var(--mono);
+      height:100vh; overflow:hidden;
+      background:
+        radial-gradient(900px 500px at 15% 10%, rgba(124,255,107,.12), transparent 60%),
+        radial-gradient(900px 500px at 80% 35%, rgba(107,228,255,.10), transparent 60%),
+        linear-gradient(180deg, rgba(0,0,0,.45), rgba(0,0,0,.55)),
+        var(--bg);
+      /* Optional background image (uncomment if you add static/bg.jpg) */
+      /* background-image: url('/static/bg.jpg'); background-size: cover; background-position: center; */
+    }
+
+    /* Subtle overlay grid */
+    body::before{
+      content:""; position:fixed; inset:0; pointer-events:none; opacity:.16;
+      background:
+        linear-gradient(to right, rgba(255,255,255,.06) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255,255,255,.05) 1px, transparent 1px);
+      background-size: 56px 56px;
+      mask-image: radial-gradient(circle at 30% 15%, rgba(0,0,0,1) 0%, rgba(0,0,0,.7) 38%, rgba(0,0,0,0) 72%);
+    }
+
     .wrap{ height:100vh; display:grid; grid-template-rows:auto 1fr auto; gap:12px; padding:14px; box-sizing:border-box; }
     .top{
       border:1px solid var(--border); border-radius:var(--radius); background:var(--panel);
       padding:12px 14px; display:flex; justify-content:space-between; align-items:center; gap:12px;
+      backdrop-filter: blur(10px);
     }
+    .brand{ display:flex; gap:12px; align-items:center; }
+    .brand img{
+      height:28px; width:auto; display:none;
+      filter: drop-shadow(0 10px 18px rgba(0,0,0,.35));
+    }
+    /* If /static/logo.png exists, browser will show it. If not, it stays broken;
+       we hide it via JS once image fails to load. */
+    .brandTitle{ font-weight:1000; letter-spacing:.2px; }
+    .brandSub{ color:var(--muted); font-size:12px; margin-left:10px; }
+
     .pill{ display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; border:1px solid var(--border); background:rgba(0,0,0,.18);}
     .dot{ width:10px; height:10px; border-radius:50%; background:#ff5c5c; }
     .dot.ok{ background:#21d07a; }
+
     .main{ min-height:0; display:grid; grid-template-columns: 260px 1fr; gap:12px; }
-    .panel{ min-height:0; border:1px solid var(--border); border-radius:var(--radius); background:var(--panel); overflow:hidden; }
+    .panel{ min-height:0; border:1px solid var(--border); border-radius:var(--radius); background:var(--panel); overflow:hidden; backdrop-filter: blur(10px); }
     .head{ padding:10px 12px; border-bottom:1px solid var(--border); color:var(--muted); display:flex; justify-content:space-between; }
     #users{ padding:10px 12px; overflow:auto; min-height:0; }
     .u{ padding:8px 10px; border:1px solid rgba(255,255,255,.06); border-radius:12px; background:rgba(0,0,0,.14); margin-bottom:8px; }
     #log{ padding:12px 14px; overflow:auto; min-height:0; white-space:pre-wrap; line-height:1.45; }
     .bar{
       border:1px solid var(--border); border-radius:var(--radius); background:var(--panel);
-      padding:12px; display:grid; grid-template-columns: 1fr 120px; gap:12px;
+      padding:12px; display:grid; grid-template-columns: 1fr 120px; gap:12px; backdrop-filter: blur(10px);
     }
     input{ width:100%; padding:12px 12px; border-radius:12px; border:1px solid var(--border);
            background:rgba(0,0,0,.22); color:var(--text); font-family:var(--mono); outline:none; box-sizing:border-box; }
@@ -128,9 +163,9 @@ HTML = r"""<!doctype html>
       padding:18px; box-sizing:border-box;
     }
     .card{
-      width:min(820px, 96vw);
+      width:min(860px, 96vw);
       border:1px solid var(--border); border-radius:16px; background:rgba(255,255,255,.06);
-      overflow:hidden;
+      overflow:hidden; backdrop-filter: blur(12px);
     }
     .card .top{ border:0; border-bottom:1px solid var(--border); border-radius:0; background:transparent; }
     .body{ padding:14px; display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
@@ -144,8 +179,14 @@ HTML = r"""<!doctype html>
   <div id="lobby">
     <div class="card">
       <div class="top">
-        <div><b>Step 3</b> – bendras kanalas (#main)</div>
-        <div class="small">broadcast + online</div>
+        <div class="brand">
+          <img id="logoLobby" src="/static/logo.png" alt="Logo"/>
+          <div>
+            <div class="brandTitle">HestioRooms Chat</div>
+            <div class="small">#main — bendras kanalas</div>
+          </div>
+        </div>
+        <div class="small">branding</div>
       </div>
       <div class="body">
         <div class="panel" style="border-radius:14px;">
@@ -161,7 +202,7 @@ HTML = r"""<!doctype html>
           <div style="padding:12px;">
             <button id="join" disabled style="width:100%;">Join</button>
             <div class="small" style="margin-top:10px;">
-              Patikrink 2 naršykles: turi matyti vienas kito žinutes.
+              Jei logo nerodo: įkelk <b>static/logo.png</b> į repo.
             </div>
           </div>
         </div>
@@ -171,7 +212,13 @@ HTML = r"""<!doctype html>
 
   <div class="wrap" id="app" style="display:none;">
     <div class="top">
-      <div><b>#main</b> <span class="small">bendras kanalas</span></div>
+      <div class="brand">
+        <img id="logoTop" src="/static/logo.png" alt="Logo"/>
+        <div>
+          <div class="brandTitle">HestioRooms <span class="brandSub">#main</span></div>
+          <div class="small">shared room • online list realtime</div>
+        </div>
+      </div>
       <div class="pill"><span id="dot" class="dot"></span><span id="st">disconnected</span></div>
     </div>
 
@@ -208,6 +255,16 @@ HTML = r"""<!doctype html>
   const btn = document.getElementById("btn");
   const dot = document.getElementById("dot");
   const st = document.getElementById("st");
+
+  // Hide logo <img> if file is missing
+  function setupLogo(imgId){
+    const img = document.getElementById(imgId);
+    if(!img) return;
+    img.style.display = "block";
+    img.addEventListener("error", () => { img.style.display = "none"; });
+  }
+  setupLogo("logoLobby");
+  setupLogo("logoTop");
 
   let ws = null;
   let connecting = false;
@@ -344,14 +401,9 @@ HTML = r"""<!doctype html>
       btn.disabled = true;
       line(`[client] closed code=${ev.code}`);
 
-      // Only auto-reconnect after we had a real connection
       if(joinedOnce){
         scheduleReconnect();
       }
-    };
-
-    ws.onerror = () => {
-      // most browsers will also call onclose
     };
   }
 
@@ -435,7 +487,6 @@ async def ws_endpoint(ws: WebSocket):
 
     hb_task: Optional[asyncio.Task] = asyncio.create_task(heartbeat(ws))
 
-    # Send initial state to this client, then broadcast user list to everyone
     await ws_send(ws, {"type": "msg", "t": ts(), "text": f"welcome {nick} (shared room)"})
     await broadcast_users()
 

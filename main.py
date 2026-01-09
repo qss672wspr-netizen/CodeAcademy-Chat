@@ -5,7 +5,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, Set, Tuple, Dict, Deque
+from typing import Optional, Set, Tuple, Dict, Deque, Any
 
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -14,12 +14,14 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse
 app = FastAPI()
 
 # =========================
-# TIMEZONE (fix 2h offset)
+# TIMEZONE (Vilnius)
 # =========================
 TZ = ZoneInfo("Europe/Vilnius")
 
+
 def ts() -> str:
     return datetime.now(TZ).strftime("%H:%M:%S")
+
 
 # =========================
 # KONFIGŪRACIJA
@@ -46,13 +48,13 @@ ROOMS = {
     }
 }
 
-# DM istorijos pagal porą (casefold)
+# DM istorijos pagal porą (casefold), saugom atskirai nuo #main
 DM_HISTORY: Dict[Tuple[str, str], Deque[dict]] = {}
 
 state_lock = asyncio.Lock()
 
 # =========================
-# HTML
+# HTML (DM tabs + unread)
 # =========================
 HTML = r"""<!doctype html>
 <html lang="lt">
@@ -104,7 +106,6 @@ HTML = r"""<!doctype html>
       font-family:var(--mono); overflow:hidden;
     }
 
-    /* Background layers */
     .bg{ position:fixed; inset:0; z-index:0; pointer-events:none; }
     .bg::before{
       content:""; position:absolute; inset:-2px; opacity:.22;
@@ -169,7 +170,7 @@ HTML = r"""<!doctype html>
 
     .main{
       display:grid;
-      grid-template-columns: 1fr 290px;
+      grid-template-columns: 1fr 320px;
       gap:12px;
       min-height:0;
     }
@@ -197,6 +198,11 @@ HTML = r"""<!doctype html>
     .me{ color: var(--accent2); }
     .dmTag{ color: var(--accent2); font-weight:900; }
 
+    .rightWrap{
+      display:grid;
+      grid-template-rows:auto auto 1fr auto auto 1fr;
+      min-height:0;
+    }
     .sidehead{
       padding:12px 12px;
       border-bottom:1px solid var(--border);
@@ -218,11 +224,53 @@ HTML = r"""<!doctype html>
       outline:none;
       box-sizing:border-box;
     }
+
+    .sectionTitle{
+      padding:10px 12px;
+      border-bottom:1px solid var(--border);
+      color:var(--muted);
+      font-size:12px;
+      letter-spacing:.2px;
+    }
+
+    #convos{
+      padding:10px 10px 12px 10px;
+      overflow:auto;
+      min-height:0;
+      border-bottom:1px solid var(--border);
+    }
+    .convo{
+      display:flex; align-items:center; justify-content:space-between; gap:10px;
+      padding:9px 10px;
+      border-radius:14px;
+      border:1px solid rgba(255,255,255,0.03);
+      background:rgba(0,0,0,0.12);
+      margin-bottom:8px;
+      cursor:pointer;
+    }
+    .convo:hover{ filter:brightness(1.08); }
+    .convo.active{
+      border-color: rgba(124,255,107,.28);
+      background: rgba(124,255,107,.06);
+    }
+    .cname{ font-weight:900; font-size:13px; }
+    .badge{
+      min-width:22px;
+      padding:2px 8px;
+      border-radius:999px;
+      font-size:12px;
+      font-weight:900;
+      color:var(--bg);
+      background:var(--accent2);
+      display:none;
+      align-items:center;
+      justify-content:center;
+    }
+
     #users{
       padding:10px 10px 12px 10px;
       overflow:auto;
       min-height:0;
-      max-height:100%;
     }
     .user{
       display:flex; align-items:center; gap:10px;
@@ -271,7 +319,7 @@ HTML = r"""<!doctype html>
     .bottombar button:hover{ filter:brightness(1.08); }
     .bottombar button:disabled{ opacity:.55; cursor:not-allowed; }
 
-    /* Lobby overlay */
+    /* Lobby */
     #lobby{
       position:fixed; inset:0; z-index:10;
       display:flex; align-items:center; justify-content:center;
@@ -399,6 +447,7 @@ HTML = r"""<!doctype html>
       .main{ grid-template-columns: 1fr; }
       .status{ display:none; }
       .card-body{ grid-template-columns: 1fr; }
+      .rightWrap{ grid-template-rows:auto auto 1fr auto auto 1fr; }
     }
   </style>
 </head>
@@ -502,7 +551,13 @@ HTML = r"""<!doctype html>
         <div id="log"></div>
       </div>
 
-      <div class="panel">
+      <div class="panel rightWrap">
+        <div class="sidehead">
+          <span>Pokalbiai</span>
+          <span>tabs</span>
+        </div>
+        <div id="convos"></div>
+
         <div class="sidehead">
           <span>Online: <b id="onlineCount">0</b></span>
           <span>live</span>
@@ -542,6 +597,8 @@ HTML = r"""<!doctype html>
   const topicEl = document.getElementById("topic");
   const meNickPill = document.getElementById("meNickPill");
 
+  const convosEl = document.getElementById("convos");
+
   const usersEl = document.getElementById("users");
   const onlineCountEl = document.getElementById("onlineCount");
   const userSearchEl = document.getElementById("userSearch");
@@ -554,7 +611,17 @@ HTML = r"""<!doctype html>
 
   let room = "main";
   let nick = "";
+  let myNick = ""; // iš serverio (canonical)
 
+  // serverio #main topic
+  let mainTopicText = "#main";
+
+  // Pokalbių modelis (tabs)
+  // convKey: "main" arba "dm:<Nick>"
+  const convs = new Map(); // key -> { key, title, kind, peerNick, items:[], unread:int, loaded:bool }
+  let activeKey = "main";
+
+  // Online users
   let allUsers = [];
 
   let nickAvailable = false;
@@ -631,6 +698,151 @@ HTML = r"""<!doctype html>
     return `${proto}://${location.host}/ws?${qs}`;
   }
 
+  function ensureMainConvo(){
+    if(!convs.has("main")){
+      convs.set("main", { key:"main", title:"#main", kind:"main", peerNick:null, items:[], unread:0, loaded:true });
+    }
+  }
+
+  function ensureDmConvo(peerNick){
+    const key = `dm:${peerNick}`;
+    if(!convs.has(key)){
+      convs.set(key, { key, title:`DM: ${peerNick}`, kind:"dm", peerNick, items:[], unread:0, loaded:false });
+    }
+    return key;
+  }
+
+  function renderConvos(){
+    convosEl.innerHTML = "";
+    const arr = Array.from(convs.values());
+    // main pirma, tada DM pagal title
+    arr.sort((a,b) => {
+      if(a.key === "main") return -1;
+      if(b.key === "main") return 1;
+      return (a.title||"").localeCompare(b.title||"", "lt");
+    });
+
+    for(const c of arr){
+      const row = document.createElement("div");
+      row.className = "convo" + (c.key === activeKey ? " active" : "");
+      const unread = c.unread || 0;
+
+      row.innerHTML = `
+        <div class="cname">${esc(c.title)}</div>
+        <div class="badge" style="${unread>0 ? 'display:inline-flex;' : ''}">${unread}</div>
+      `;
+
+      row.addEventListener("click", () => switchConvo(c.key));
+      convosEl.appendChild(row);
+    }
+  }
+
+  function setTopicForActive(){
+    const c = convs.get(activeKey);
+    if(!c) return;
+
+    if(c.kind === "main"){
+      topicEl.textContent = mainTopicText || "#main";
+      msgEl.placeholder = "rašyk žinutę į #main ir Enter...";
+    }else{
+      topicEl.textContent = `DM su ${c.peerNick}`;
+      msgEl.placeholder = `rašyk žinutę vartotojui ${c.peerNick} ir Enter...`;
+    }
+  }
+
+  function renderActiveLog(){
+    clearLog();
+    const c = convs.get(activeKey);
+    if(!c) return;
+    for(const item of c.items){
+      addLineHtml(item.__html);
+    }
+  }
+
+  function switchConvo(key){
+    if(!convs.has(key)) return;
+    activeKey = key;
+    const c = convs.get(key);
+    if(c){
+      c.unread = 0;
+    }
+
+    renderConvos();
+    setTopicForActive();
+
+    // jei DM dar neprašėm istorijos – prašom dabar
+    if(c && c.kind === "dm" && !c.loaded){
+      c.loaded = true; // užfiksuojam, kad jau užklausėm
+      // įdedam "loading" žinutę lokaliai (tik jei dar nieko nėra)
+      if(c.items.length === 0){
+        pushToConvo(key, {type:"sys", t:"", text:"Kraunama DM istorija..."}, true);
+      }
+      requestDmHistory(c.peerNick);
+    }
+
+    renderActiveLog();
+    msgEl.focus();
+  }
+
+  function stopReconnect(){
+    if(reconnectTimer){
+      clearInterval(reconnectTimer);
+      reconnectTimer = null;
+    }
+  }
+
+  function formatHtmlFromServerObj(o){
+    const t = esc(o.t || "");
+    if(o.type === "msg"){
+      const nn = esc(o.nick || "???");
+      const cc = esc(o.color || "#caffd9");
+      const tx = esc(o.text || "");
+      return `<span class="t">[${t}]</span> <span class="nick" style="color:${cc}">${nn}</span>: <span class="msg">${tx}</span>`;
+    }
+    if(o.type === "dm"){
+      const f = esc(o.from || "???");
+      const to = esc(o.to || "???");
+      const cc = esc(o.color || "#caffd9");
+      const tx = esc(o.text || "");
+      return `<span class="t">[${t}]</span> <span class="dmTag">[DM]</span> <span class="nick" style="color:${cc}">${f}</span> → <span class="nick">${to}</span>: <span class="msg">${tx}</span>`;
+    }
+    if(o.type === "me_action"){
+      const nn = esc(o.nick || "???");
+      const cc = esc(o.color || "#caffd9");
+      const tx = esc(o.text || "");
+      return `<span class="t">[${t}]</span> <span class="me" style="color:${cc}">* ${nn} ${tx}</span>`;
+    }
+    const tx = esc(o.text || "");
+    return `<span class="t">[${t}]</span> <span class="sys">${tx}</span>`;
+  }
+
+  function pushToConvo(key, o, doNotUnread=false){
+    ensureMainConvo();
+
+    const c = convs.get(key);
+    if(!c) return;
+
+    const html = formatHtmlFromServerObj(o);
+    const item = { ...o, __html: html };
+    c.items.push(item);
+
+    // limit client-side memory
+    if(c.items.length > 600){
+      c.items.splice(0, c.items.length - 600);
+    }
+
+    // unread
+    if(!doNotUnread && key !== activeKey){
+      c.unread = (c.unread || 0) + 1;
+      renderConvos();
+    }
+
+    // jei aktyvus - rodom iškart
+    if(key === activeKey){
+      addLineHtml(html);
+    }
+  }
+
   async function suggestNick(base){
     try{
       const qs = new URLSearchParams({ room: "main", base }).toString();
@@ -674,7 +886,6 @@ HTML = r"""<!doctype html>
         setNickError((j && j.reason) ? j.reason : "Nick užimtas arba neteisingas.");
         joinMain.disabled = true;
 
-        // auto-pasiūlymas (jei užimtas)
         const sug = await suggestNick(n);
         if(sug && sug.toLowerCase() !== n.toLowerCase()){
           showSuggest(sug);
@@ -714,13 +925,6 @@ HTML = r"""<!doctype html>
     else setTimeout(() => msgEl.focus(), 40);
   }
 
-  function stopReconnect(){
-    if(reconnectTimer){
-      clearInterval(reconnectTimer);
-      reconnectTimer = null;
-    }
-  }
-
   function renderUsers(items){
     const arr = Array.isArray(items) ? items.slice() : [];
     arr.sort((a,b) => (a.nick||"").localeCompare(b.nick||"", "lt"));
@@ -735,9 +939,13 @@ HTML = r"""<!doctype html>
       row.className = "user";
       row.innerHTML = `<span class="udot" style="background:${cc}"></span><span class="uname" style="color:${cc}">${nn}</span>`;
       row.addEventListener("click", () => {
-        // Greitas private chat: paspaudi userį -> įmeta /dm Nick
-        msgEl.value = `/dm ${u.nick} `;
-        msgEl.focus();
+        // neatidarom DM su savimi
+        if(myNick && (u.nick || "").toLowerCase() === myNick.toLowerCase()){
+          return;
+        }
+        const key = ensureDmConvo(u.nick);
+        renderConvos();
+        switchConvo(key);
       });
       usersEl.appendChild(row);
     }
@@ -750,6 +958,11 @@ HTML = r"""<!doctype html>
   }
   userSearchEl.addEventListener("input", applyUserFilter);
 
+  function requestDmHistory(peerNick){
+    if(!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: "dm_history_req", with: peerNick, limit: 120 }));
+  }
+
   function connect(){
     joinEstablished = false;
     fatalJoinError = false;
@@ -757,19 +970,23 @@ HTML = r"""<!doctype html>
     if(ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
 
     setConn(false);
-    addLineHtml(`<span class="sys">[sys]</span> jungiamasi...`);
+    ensureMainConvo();
+    renderConvos();
+    switchConvo("main");
+
+    pushToConvo("main", {type:"sys", t: "", text:"jungiamasi..."}, true);
 
     ws = new WebSocket(wsUrl());
 
     ws.onopen = () => {
       setConn(true);
-      addLineHtml(`<span class="sys">[sys]</span> prisijungta.`);
+      pushToConvo("main", {type:"sys", t: tsLocalFallback(), text:"prisijungta."}, true);
       stopReconnect();
     };
 
     ws.onmessage = (ev) => {
       let o = null;
-      try { o = JSON.parse(ev.data); } catch { addLineHtml(esc(ev.data)); return; }
+      try { o = JSON.parse(ev.data); } catch { return; }
 
       if(o.type === "error"){
         fatalJoinError = true;
@@ -790,26 +1007,71 @@ HTML = r"""<!doctype html>
       }
 
       if(o.type === "topic"){
-        topicEl.textContent = o.text || "#main";
+        mainTopicText = o.text || "#main";
+        if(activeKey === "main") setTopicForActive();
         return;
       }
+
       if(o.type === "users"){
         allUsers = o.items || [];
         applyUserFilter();
         return;
       }
+
       if(o.type === "history"){
-        clearLog();
-        (o.items || []).forEach(renderItem);
+        // tai #main history
+        const c = convs.get("main");
+        if(c){
+          c.items = [];
+        }
+        for(const it of (o.items || [])){
+          pushToConvo("main", it, true);
+        }
+        // jei aktyvus main — per-render iš atminties (kad tvarkingai)
+        if(activeKey === "main"){
+          renderActiveLog();
+        }
         return;
       }
+
       if(o.type === "me"){
+        myNick = o.nick || "";
         const cc = esc(o.color || "#caffd9");
         const nn = esc(o.nick || "");
         meNickPill.innerHTML = `<b style="color:${cc}">${nn}</b>`;
         return;
       }
-      renderItem(o);
+
+      if(o.type === "dm_history"){
+        const peer = o.with || "";
+        const key = ensureDmConvo(peer);
+        const c = convs.get(key);
+        if(c){
+          // išvalom "loading" ir supildom istoriją
+          c.items = [];
+          for(const it of (o.items || [])){
+            pushToConvo(key, it, true);
+          }
+          if(activeKey === key){
+            renderActiveLog();
+          }
+        }
+        renderConvos();
+        return;
+      }
+
+      // DM routing
+      if(o.type === "dm"){
+        // peer = kitas žmogus (ne aš)
+        const peer = (myNick && (o.from || "").toLowerCase() === myNick.toLowerCase()) ? (o.to || "") : (o.from || "");
+        const key = ensureDmConvo(peer);
+        renderConvos();
+        pushToConvo(key, o, false);
+        return;
+      }
+
+      // normal msg -> main
+      pushToConvo("main", o, false);
     };
 
     ws.onclose = () => {
@@ -827,52 +1089,55 @@ HTML = r"""<!doctype html>
 
       if(fatalJoinError) return;
 
-      addLineHtml(`<span class="sys">[sys]</span> ryšys nutrūko, reconnect...`);
+      pushToConvo("main", {type:"sys", t: tsLocalFallback(), text:"ryšys nutrūko, reconnect..."}, false);
       if(!reconnectTimer) reconnectTimer = setInterval(connect, 1500);
     };
   }
 
-  function renderItem(o){
-    const t = esc(o.t || "");
-
-    if(o.type === "msg"){
-      const nn = esc(o.nick || "???");
-      const cc = esc(o.color || "#caffd9");
-      const tx = esc(o.text || "");
-      addLineHtml(`<span class="t">[${t}]</span> <span class="nick" style="color:${cc}">${nn}</span>: <span class="msg">${tx}</span>`);
-      return;
-    }
-
-    if(o.type === "dm"){
-      const f = esc(o.from || "???");
-      const to = esc(o.to || "???");
-      const cc = esc(o.color || "#caffd9");
-      const tx = esc(o.text || "");
-      addLineHtml(`<span class="t">[${t}]</span> <span class="dmTag">[DM]</span> <span class="nick" style="color:${cc}">${f}</span> → <span class="nick">${to}</span>: <span class="msg">${tx}</span>`);
-      return;
-    }
-
-    if(o.type === "me_action"){
-      const nn = esc(o.nick || "???");
-      const cc = esc(o.color || "#caffd9");
-      const tx = esc(o.text || "");
-      addLineHtml(`<span class="t">[${t}]</span> <span class="me" style="color:${cc}">* ${nn} ${tx}</span>`);
-      return;
-    }
-
-    const tx = esc(o.text || "");
-    addLineHtml(`<span class="t">[${t}]</span> <span class="sys">${tx}</span>`);
+  function tsLocalFallback(){
+    // tik tam, kad "prisijungta" žinutė turėtų laiką, jei serveris dar neatsiuntė nieko
+    const d = new Date();
+    const hh = String(d.getHours()).padStart(2,'0');
+    const mm = String(d.getMinutes()).padStart(2,'0');
+    const ss = String(d.getSeconds()).padStart(2,'0');
+    return `${hh}:${mm}:${ss}`;
   }
 
   function send(){
     const text = (msgEl.value || "").trim();
     if(!text) return;
+
     if(!ws || ws.readyState !== WebSocket.OPEN){
-      addLineHtml(`<span class="sys">[sys]</span> nėra ryšio su serveriu.`);
+      pushToConvo(activeKey, {type:"sys", t: tsLocalFallback(), text:"nėra ryšio su serveriu."}, false);
       return;
     }
-    ws.send(JSON.stringify({text}));
-    msgEl.value = "";
+
+    const c = convs.get(activeKey);
+    if(!c){
+      return;
+    }
+
+    // jei vartotojas rašo komandą - siunčiam kaip yra (komandos veikia visur)
+    if(text.startsWith("/")){
+      ws.send(JSON.stringify({ text }));
+      msgEl.value = "";
+      return;
+    }
+
+    // main
+    if(c.kind === "main"){
+      ws.send(JSON.stringify({ text }));
+      msgEl.value = "";
+      return;
+    }
+
+    // dm tab: siunčiam kaip /dm <nick> <tekstas>
+    if(c.kind === "dm"){
+      const peer = c.peerNick;
+      ws.send(JSON.stringify({ text: `/dm ${peer} ${text}` }));
+      msgEl.value = "";
+      return;
+    }
   }
 
   btn.onclick = send;
@@ -886,6 +1151,14 @@ HTML = r"""<!doctype html>
     nick = n;
     localStorage.setItem("nick", nick);
     room = "main";
+
+    // init conversations
+    convs.clear();
+    ensureMainConvo();
+    activeKey = "main";
+    renderConvos();
+    setTopicForActive();
+    renderActiveLog();
 
     showLobby(false);
     connect();
@@ -960,6 +1233,14 @@ def dm_history_for(a: str, b: str) -> Deque[dict]:
     return DM_HISTORY[k]
 
 
+def dm_history_items(a: str, b: str, limit: int = 120) -> list[dict]:
+    hist = dm_history_for(a, b)
+    if limit <= 0:
+        limit = 120
+    limit = min(limit, HISTORY_LIMIT)
+    return list(hist)[-limit:]
+
+
 async def room_broadcast(room_key: str, obj: dict, exclude: Optional[WebSocket] = None):
     dead = []
     for ws in list(ROOMS[room_key]["clients"]):
@@ -1031,14 +1312,12 @@ async def check_nick(room: str = "main", nick: str = ""):
 
 
 def _fit_candidate(stem: str, suffix: str) -> str:
-    # užtikrina max 24
     max_len = 24
     stem = stem.strip()
     if len(stem) < 2:
         stem = "User"
     allow = max_len - len(suffix)
     if allow < 2:
-        # labai ekstremalu: trumpinam suffix
         suffix = suffix[: max_len - 2]
         allow = max_len - len(suffix)
     stem = stem[:allow]
@@ -1056,11 +1335,9 @@ async def suggest_nick(room: str = "main", base: str = ""):
     if not b:
         return JSONResponse({"ok": True, "suggestion": "User" + str(random.randint(100, 999))})
 
-    # jei bazė bloga, vis tiek duodam saugų pasiūlymą
     if not valid_nick(b):
         b = "User"
 
-    # stem: nuimam galinius skaičius (pvz Tomas12 -> Tomas)
     stem = re.sub(r"\s*\d+$", "", b).rstrip()
     if len(stem) < 2:
         stem = b[:24]
@@ -1074,7 +1351,6 @@ async def suggest_nick(room: str = "main", base: str = ""):
             if valid_nick(cand) and not is_nick_taken(room_key, cand):
                 return JSONResponse({"ok": True, "suggestion": cand})
 
-    # fallback
     return JSONResponse({"ok": True, "suggestion": _fit_candidate(stem, str(random.randint(100, 999)))})
 
 
@@ -1088,7 +1364,7 @@ HELP_TEXT = (
     "  /dm VARDAS ŽINUTĖ         - private žinutė vartotojui\n"
     "  /topic                    - parodyti temą\n"
     "  /topic TEKSTAS            - pakeisti temą (visiems)\n"
-    "  /history [N]              - atsiųsti paskutines N žinučių (default 80)\n"
+    "  /history [N]              - atsiųsti paskutines N žinučių (default 120)\n"
     "  /me veiksmas              - action žinutė\n"
     "  /roll [NdM]               - kauliukas (pvz. /roll 2d6)\n"
     "  /flip                     - monetos metimas\n"
@@ -1136,7 +1412,6 @@ async def handle_command(room_key: str, ws: WebSocket, text: str) -> bool:
         item = {"type": "dm", "t": ts(), "from": u.nick, "to": target_user.nick, "color": u.color, "text": msg}
         dm_history_for(u.nick, target_user.nick).append(item)
 
-        # nusiunčiam abiem
         await room_send(ws, item)
         if target_ws is not ws:
             await room_send(target_ws, item)
@@ -1155,12 +1430,12 @@ async def handle_command(room_key: str, ws: WebSocket, text: str) -> bool:
 
     if low.startswith("/history"):
         parts = text.split(" ", 1)
-        n = 80
+        n = 120
         if len(parts) == 2:
             try:
                 n = int(parts[1].strip())
             except Exception:
-                n = 80
+                n = 120
         n = max(1, min(n, HISTORY_LIMIT))
         items = list(ROOMS[room_key]["history"])[-n:]
         await room_send(ws, {"type": "history", "items": items})
@@ -1202,6 +1477,48 @@ async def handle_command(room_key: str, ws: WebSocket, text: str) -> bool:
     return False
 
 
+async def handle_client_message(room_key: str, ws: WebSocket, data: dict) -> None:
+    """
+    Priimam:
+    - {"text": "..."}  (žinutė arba komanda)
+    - {"type":"dm_history_req","with":"Nick","limit":120}
+    """
+    u: User = ROOMS[room_key]["users"].get(ws)
+    if not u:
+        return
+
+    msg_type = str(data.get("type", "")).strip()
+
+    if msg_type == "dm_history_req":
+        peer = str(data.get("with", "")).strip()
+        try:
+            limit = int(data.get("limit", 120))
+        except Exception:
+            limit = 120
+        limit = max(1, min(limit, HISTORY_LIMIT))
+
+        if not peer:
+            await room_send(ws, {"type": "sys", "t": ts(), "text": "DM istorijai reikia nurodyti vartotoją."})
+            return
+
+        items = dm_history_items(u.nick, peer, limit=limit)
+        await room_send(ws, {"type": "dm_history", "with": peer, "items": items})
+        return
+
+    text = str(data.get("text", "")).strip()[:300]
+    if not text:
+        return
+
+    if text.startswith("/"):
+        handled = await handle_command(room_key, ws, text)
+        if handled:
+            return
+
+    item = {"type": "msg", "t": ts(), "nick": u.nick, "color": u.color, "text": text}
+    await room_push_history(room_key, item)
+    await room_broadcast(room_key, item)
+
+
 # =========================
 # WEBSOCKET
 # =========================
@@ -1235,28 +1552,19 @@ async def ws_endpoint(ws: WebSocket):
         ROOMS[room_key]["clients"].add(ws)
         ROOMS[room_key]["users"][ws] = u
 
+    # Handshake
     await room_send(ws, {"type": "topic", "text": f"{ROOMS[room_key]['title']} — {ROOMS[room_key]['topic']}"})
     await room_send(ws, {"type": "history", "items": list(ROOMS[room_key]["history"])})
     await room_send(ws, {"type": "users", "items": room_userlist(room_key)})
     await room_send(ws, {"type": "me", "nick": u.nick, "color": u.color})
-
     await room_broadcast_userlist(room_key)
 
     try:
         while True:
             data = await ws.receive_json()
-            text = str(data.get("text", "")).strip()[:300]
-            if not text:
+            if not isinstance(data, dict):
                 continue
-
-            if text.startswith("/"):
-                handled = await handle_command(room_key, ws, text)
-                if handled:
-                    continue
-
-            item = {"type": "msg", "t": ts(), "nick": u.nick, "color": u.color, "text": text}
-            await room_push_history(room_key, item)
-            await room_broadcast(room_key, item)
+            await handle_client_message(room_key, ws, data)
 
     except WebSocketDisconnect:
         pass

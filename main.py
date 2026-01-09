@@ -24,11 +24,10 @@ COLOR_PALETTE = [
     "#AFFFc3", "#808000", "#000080", "#808080", "#FFFFFF",
 ]
 
-# 2–24, leisti: raidės/skaičiai/tarpas/_-.
+# 2–24, leista: raidės/skaičiai/tarpas/_-.
 NICK_RE = re.compile(r"^[A-Za-z0-9ĄČĘĖĮŠŲŪŽąčęėįšųūž_\-\. ]{2,24}$")
 ROLL_RE = re.compile(r"^/roll(?:\s+(\d{1,2})d(\d{1,3}))?$", re.IGNORECASE)
 
-# Vienas kanalas dabar (bet struktūra paruošta daugeliui)
 ROOMS = {
     "main": {
         "title": "#main",
@@ -42,7 +41,7 @@ ROOMS = {
 state_lock = asyncio.Lock()
 
 # =========================
-# HTML: Lobby (nick + kanalai + tema) + Chat UI
+# HTML
 # =========================
 HTML = r"""<!doctype html>
 <html lang="lt">
@@ -351,9 +350,7 @@ HTML = r"""<!doctype html>
     }
 
     select.themeSel{
-      width:100%;
-      margin-top:8px;
-      padding:12px;
+      padding:10px 10px;
       border-radius:12px;
       border:1px solid var(--border);
       background:rgba(0,0,0,.22);
@@ -362,6 +359,7 @@ HTML = r"""<!doctype html>
       outline:none;
       box-sizing:border-box;
     }
+    .themeSel.wide{ width:100%; margin-top:8px; padding:12px; }
 
     @media (max-width: 900px){
       .main{ grid-template-columns: 1fr; }
@@ -395,7 +393,7 @@ HTML = r"""<!doctype html>
 
           <div class="help" style="margin-top:10px;">
             Leidžiami simboliai: raidės, skaičiai, tarpas, _ - .<br/>
-            Nick privalo būti unikalus (negali būti dviejų vienodų).
+            Nick privalo būti unikalus.
           </div>
 
           <div class="help" style="margin-top:12px;">
@@ -405,7 +403,7 @@ HTML = r"""<!doctype html>
           <div class="help" style="margin-top:12px;">
             Tema:
           </div>
-          <select id="themePick" class="themeSel">
+          <select id="themePick" class="themeSel wide">
             <option value="theme-cyber">Cyber</option>
             <option value="theme-glass">Glass</option>
             <option value="theme-matrix">Matrix</option>
@@ -449,7 +447,15 @@ HTML = r"""<!doctype html>
         <span class="pill">Komandos: <span style="color:var(--text)">/help</span> <span style="color:var(--text)">/roll</span> <span style="color:var(--text)">/me</span> <span style="color:var(--text)">/topic</span> <span style="color:var(--text)">/history</span></span>
       </div>
 
-      <div class="pill" id="meNickPill" title="Tavo nick" style="min-width:160px; justify-content:center;"></div>
+      <div style="display:flex; gap:10px; align-items:center;">
+        <select id="themeTop" class="themeSel" title="Keisti temą">
+          <option value="theme-cyber">Cyber</option>
+          <option value="theme-glass">Glass</option>
+          <option value="theme-matrix">Matrix</option>
+          <option value="theme-crt">CRT</option>
+        </select>
+        <div class="pill" id="meNickPill" title="Tavo nick" style="min-width:160px; justify-content:center;"></div>
+      </div>
     </div>
 
     <div class="main">
@@ -484,7 +490,9 @@ HTML = r"""<!doctype html>
   const nickErr  = document.getElementById("nickErr");
   const nickState = document.getElementById("nickState");
   const joinMain = document.getElementById("joinMain");
+
   const themePick = document.getElementById("themePick");
+  const themeTop  = document.getElementById("themeTop");
 
   const log = document.getElementById("log");
   const msgEl = document.getElementById("msg");
@@ -502,13 +510,19 @@ HTML = r"""<!doctype html>
   // State
   let ws = null;
   let reconnectTimer = null;
+
   let room = "main";
   let nick = "";
+
   let allUsers = [];
-  let fatalJoinError = false;   // jei klaida (pvz. nick užimtas) – nebereconnectinam
+
   let checking = false;
   let nickAvailable = false;
   let checkTimer = null;
+
+  // svarbiausia: ar prisijungimas realiai pavyko (kad nesisuktų reconnect, jei nepavyko įeiti)
+  let joinEstablished = false;
+  let fatalJoinError = false;
 
   function esc(s){
     return (s ?? "").toString()
@@ -553,14 +567,7 @@ HTML = r"""<!doctype html>
     const items = allUsers.filter(u => (u.nick || "").toLowerCase().includes(q));
     renderUsers(items);
   }
-
   userSearchEl.addEventListener("input", applyUserFilter);
-
-  function wsUrl(){
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    const qs = new URLSearchParams({ room, nick }).toString();
-    return `${proto}://${location.host}/ws?${qs}`;
-  }
 
   function validateNick(n){
     return /^[A-Za-z0-9ĄČĘĖĮŠŲŪŽąčęėįšųūž_\-\. ]{2,24}$/.test(n);
@@ -585,25 +592,33 @@ HTML = r"""<!doctype html>
     }
   }
 
-  // Theme handling
+  // THEME handling (Lobby + Topbar)
   function setTheme(cls){
     document.body.className = cls;
     localStorage.setItem("theme", cls);
     if(themePick) themePick.value = cls;
+    if(themeTop) themeTop.value = cls;
   }
-  if(themePick){
-    themePick.addEventListener("change", () => setTheme(themePick.value));
+  if(themePick) themePick.addEventListener("change", () => setTheme(themePick.value));
+  if(themeTop) themeTop.addEventListener("change", () => setTheme(themeTop.value));
+
+  function wsUrl(){
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const qs = new URLSearchParams({ room, nick }).toString();
+    return `${proto}://${location.host}/ws?${qs}`;
   }
 
   async function checkNickAvailabilityNow(){
     const n = (nickPick.value || "").trim();
     nickAvailable = false;
 
+    // kol tikrinam – neleidžiam spausti prisijungti
+    joinMain.disabled = true;
+
     if(!validateNick(n)){
       checking = false;
       setNickState("");
       setNickError("Netinkamas nick. Reikia 2–24 simbolių (raidės/skaičiai/tarpas/_-.)");
-      joinMain.disabled = true;
       return;
     }
 
@@ -663,9 +678,12 @@ HTML = r"""<!doctype html>
   }
 
   function connect(){
+    // Reset join flags
+    joinEstablished = false;
+    fatalJoinError = false;
+
     if(ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
 
-    fatalJoinError = false; // naujas bandymas
     setConn(false);
     addLineHtml(`<span class="sys">[sys]</span> jungiamasi...`);
 
@@ -687,12 +705,20 @@ HTML = r"""<!doctype html>
         stopReconnect();
 
         // grįžtam į lobby ir rodom žinutę
+        try{ ws.close(); }catch{}
         showLobby(true);
+        setNickState("");
         setNickError(o.text || "Prisijungti nepavyko.");
         joinMain.disabled = true;
 
-        try{ ws.close(); }catch{}
+        // automatiškai per-tikrinam, kad mygtukas atsirastų kai pakeis nick
+        scheduleNickCheck();
         return;
+      }
+
+      // jei gaunam bent vieną normalų handshake paketą, laikom, kad prisijungėm sėkmingai
+      if(o.type === "topic" || o.type === "history" || o.type === "users" || o.type === "me"){
+        joinEstablished = true;
       }
 
       if(o.type === "topic"){
@@ -721,7 +747,20 @@ HTML = r"""<!doctype html>
     ws.onclose = () => {
       setConn(false);
 
-      // jei buvo fatali klaida (pvz nick užimtas) – nebereconnectinam
+      // Jei neprisijungėm pilnai (joinEstablished=false), nelaikom to "ryšio nutrūkimu" – grįžtam į lobby be reconnect loop.
+      if(!joinEstablished){
+        stopReconnect();
+        showLobby(true);
+
+        // Jei nebuvo gautos klaidos žinutės, duodam bendrą paaiškinimą
+        if(!fatalJoinError){
+          setNickError("Prisijungti nepavyko. Patikrink ar nick laisvas ir bandyk dar kartą.");
+          scheduleNickCheck();
+        }
+        return;
+      }
+
+      // Jei buvo fatali klaida – jau sutvarkyta aukščiau
       if(fatalJoinError) return;
 
       addLineHtml(`<span class="sys">[sys]</span> ryšys nutrūko, reconnect...`);
@@ -765,7 +804,6 @@ HTML = r"""<!doctype html>
 
   // Join flow
   joinMain.onclick = async () => {
-    // prieš prisijungiant – dar kartą patikrinam (apsauga)
     await checkNickAvailabilityNow();
     if(!nickAvailable) return;
 
@@ -781,13 +819,12 @@ HTML = r"""<!doctype html>
   // Restore saved nick + theme
   (function init(){
     const savedNick = (localStorage.getItem("nick") || "").trim();
-    if(savedNick){
-      nickPick.value = savedNick;
-    }
+    if(savedNick) nickPick.value = savedNick;
+
     const savedTheme = (localStorage.getItem("theme") || "theme-cyber").trim();
     setTheme(savedTheme);
 
-    // iškart patikrinam nick (jei yra)
+    // pradinis tikrinimas
     scheduleNickCheck();
     showLobby(true);
   })();
@@ -1002,14 +1039,14 @@ async def handle_command(room_key: str, ws: WebSocket, text: str) -> bool:
 
 
 # =========================
-# WEBSOCKET: privalomas nick prieš prisijungiant
+# WEBSOCKET
 # =========================
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     room_key = (ws.query_params.get("room") or "").strip()
     nick = (ws.query_params.get("nick") or "").strip()
 
-    # Priimam WS tik tam, kad galėtume atsiųsti aiškų error į klientą
+    # Priimam WS, kad galėtume atsiųsti aiškų error į klientą
     await ws.accept()
 
     if room_key not in ROOMS:
@@ -1035,13 +1072,12 @@ async def ws_endpoint(ws: WebSocket):
         ROOMS[room_key]["clients"].add(ws)
         ROOMS[room_key]["users"][ws] = u
 
-    # Nusiųsti: topic + history + online + tavo nick pill
+    # Handshake paketai
     await room_send(ws, {"type": "topic", "text": f"{ROOMS[room_key]['title']} — {ROOMS[room_key]['topic']}"})
     await room_send(ws, {"type": "history", "items": list(ROOMS[room_key]["history"])})
     await room_send(ws, {"type": "users", "items": room_userlist(room_key)})
     await room_send(ws, {"type": "me", "nick": u.nick, "color": u.color})
 
-    # Online atnaujinimas visiems (be "prisijungė/atsijungė" spam)
     await room_broadcast_userlist(room_key)
 
     try:

@@ -4,19 +4,28 @@ import re
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Optional, Set
+from datetime import datetime
+from typing import Optional, Set, Tuple, Dict, Deque
 
+from zoneinfo import ZoneInfo
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse
 
 app = FastAPI()
 
 # =========================
+# TIMEZONE (fix 2h offset)
+# =========================
+TZ = ZoneInfo("Europe/Vilnius")
+
+def ts() -> str:
+    return datetime.now(TZ).strftime("%H:%M:%S")
+
+# =========================
 # KONFIGŪRACIJA
 # =========================
 HISTORY_LIMIT = 300
 
-# Kardinaliai skirtingos spalvos (aukšto kontrasto paletė)
 COLOR_PALETTE = [
     "#E6194B", "#3CB44B", "#FFE119", "#0082C8", "#F58231",
     "#911EB4", "#46F0F0", "#F032E6", "#D2F53C", "#FABEBE",
@@ -24,7 +33,6 @@ COLOR_PALETTE = [
     "#AFFFc3", "#808000", "#000080", "#808080", "#FFFFFF",
 ]
 
-# 2–24, leista: raidės/skaičiai/tarpas/_-.
 NICK_RE = re.compile(r"^[A-Za-z0-9ĄČĘĖĮŠŲŪŽąčęėįšųūž_\-\. ]{2,24}$")
 ROLL_RE = re.compile(r"^/roll(?:\s+(\d{1,2})d(\d{1,3}))?$", re.IGNORECASE)
 
@@ -37,6 +45,9 @@ ROOMS = {
         "users": {},  # ws -> User
     }
 }
+
+# DM istorijos pagal porą (casefold)
+DM_HISTORY: Dict[Tuple[str, str], Deque[dict]] = {}
 
 state_lock = asyncio.Lock()
 
@@ -115,7 +126,6 @@ HTML = r"""<!doctype html>
     }
     @keyframes scan{ 0%{transform:translateY(0);} 100%{transform:translateY(10px);} }
 
-    /* Layout */
     .app{
       position:relative; z-index:1;
       height:100%;
@@ -185,6 +195,7 @@ HTML = r"""<!doctype html>
     .msg{ color: var(--text); }
     .nick{ font-weight:900; }
     .me{ color: var(--accent2); }
+    .dmTag{ color: var(--accent2); font-weight:900; }
 
     .sidehead{
       padding:12px 12px;
@@ -217,10 +228,12 @@ HTML = r"""<!doctype html>
       display:flex; align-items:center; gap:10px;
       padding:8px 10px;
       border-radius:14px;
-      border:1px solid rgba(255,255,255,.03);
+      border:1px solid rgba(255,255,255,0.03);
       background:rgba(0,0,0,0.12);
       margin-bottom:8px;
+      cursor:pointer;
     }
+    .user:hover{ filter:brightness(1.08); }
     .udot{ width:10px; height:10px; border-radius:999px; box-shadow:0 0 14px rgba(0,0,0,.25); }
     .uname{ font-weight:900; font-size:13px; word-break:break-word; }
 
@@ -349,6 +362,27 @@ HTML = r"""<!doctype html>
       display:none;
     }
 
+    #nickSuggestBox{
+      margin-top:10px;
+      display:none;
+      border:1px solid var(--border);
+      background:rgba(0,0,0,.18);
+      padding:10px;
+      border-radius:12px;
+    }
+    #nickSuggestBox b{ color:var(--text); }
+    #applySuggest{
+      margin-left:10px;
+      padding:8px 10px;
+      border-radius:10px;
+      border:1px solid rgba(0,0,0,.2);
+      background:var(--accent2);
+      color:var(--bg);
+      font-weight:900;
+      font-family:var(--mono);
+      cursor:pointer;
+    }
+
     select.themeSel{
       padding:10px 10px;
       border-radius:12px;
@@ -391,6 +425,11 @@ HTML = r"""<!doctype html>
           <div id="nickErr"></div>
           <div id="nickState"></div>
 
+          <div id="nickSuggestBox">
+            Siūlomas nick: <b id="nickSuggestVal"></b>
+            <button id="applySuggest">Pritaikyti</button>
+          </div>
+
           <div class="help" style="margin-top:10px;">
             Leidžiami simboliai: raidės, skaičiai, tarpas, _ - .<br/>
             Nick privalo būti unikalus.
@@ -424,7 +463,7 @@ HTML = r"""<!doctype html>
           </div>
 
           <div class="help" style="margin-top:10px;">
-            Po prisijungimo komandos: <span style="color:var(--text)">/help</span>, <span style="color:var(--text)">/roll</span>, <span style="color:var(--text)">/me</span>, <span style="color:var(--text)">/topic</span>, <span style="color:var(--text)">/history</span>.
+            Komandos: <span style="color:var(--text)">/help</span>, <span style="color:var(--text)">/dm</span>, <span style="color:var(--text)">/roll</span>, <span style="color:var(--text)">/me</span>, <span style="color:var(--text)">/topic</span>, <span style="color:var(--text)">/history</span>.
           </div>
         </div>
       </div>
@@ -444,7 +483,7 @@ HTML = r"""<!doctype html>
           <span id="connDot" class="dot"></span>
           <span id="connText">Disconnected</span>
         </span>
-        <span class="pill">Komandos: <span style="color:var(--text)">/help</span> <span style="color:var(--text)">/roll</span> <span style="color:var(--text)">/me</span> <span style="color:var(--text)">/topic</span> <span style="color:var(--text)">/history</span></span>
+        <span class="pill">Komandos: <span style="color:var(--text)">/help</span> <span style="color:var(--text)">/dm</span> <span style="color:var(--text)">/roll</span> <span style="color:var(--text)">/me</span> <span style="color:var(--text)">/topic</span> <span style="color:var(--text)">/history</span></span>
       </div>
 
       <div style="display:flex; gap:10px; align-items:center;">
@@ -482,7 +521,6 @@ HTML = r"""<!doctype html>
   </div>
 
 <script>
-  // Elements
   const lobby = document.getElementById("lobby");
   const appEl = document.getElementById("app");
 
@@ -490,6 +528,10 @@ HTML = r"""<!doctype html>
   const nickErr  = document.getElementById("nickErr");
   const nickState = document.getElementById("nickState");
   const joinMain = document.getElementById("joinMain");
+
+  const nickSuggestBox = document.getElementById("nickSuggestBox");
+  const nickSuggestVal = document.getElementById("nickSuggestVal");
+  const applySuggest   = document.getElementById("applySuggest");
 
   const themePick = document.getElementById("themePick");
   const themeTop  = document.getElementById("themeTop");
@@ -507,7 +549,6 @@ HTML = r"""<!doctype html>
   const connDot = document.getElementById("connDot");
   const connText = document.getElementById("connText");
 
-  // State
   let ws = null;
   let reconnectTimer = null;
 
@@ -516,11 +557,9 @@ HTML = r"""<!doctype html>
 
   let allUsers = [];
 
-  let checking = false;
   let nickAvailable = false;
   let checkTimer = null;
 
-  // svarbiausia: ar prisijungimas realiai pavyko (kad nesisuktų reconnect, jei nepavyko įeiti)
   let joinEstablished = false;
   let fatalJoinError = false;
 
@@ -545,30 +584,6 @@ HTML = r"""<!doctype html>
 
   function clearLog(){ log.innerHTML = ""; }
 
-  function renderUsers(items){
-    const arr = Array.isArray(items) ? items.slice() : [];
-    arr.sort((a,b) => (a.nick||"").localeCompare(b.nick||"", "lt"));
-
-    onlineCountEl.textContent = String(arr.length);
-    usersEl.innerHTML = "";
-
-    for(const u of arr){
-      const nn = esc(u.nick || "???");
-      const cc = esc(u.color || "#caffd9");
-      const row = document.createElement("div");
-      row.className = "user";
-      row.innerHTML = `<span class="udot" style="background:${cc}"></span><span class="uname" style="color:${cc}">${nn}</span>`;
-      usersEl.appendChild(row);
-    }
-  }
-
-  function applyUserFilter(){
-    const q = (userSearchEl.value || "").trim().toLowerCase();
-    const items = allUsers.filter(u => (u.nick || "").toLowerCase().includes(q));
-    renderUsers(items);
-  }
-  userSearchEl.addEventListener("input", applyUserFilter);
-
   function validateNick(n){
     return /^[A-Za-z0-9ĄČĘĖĮŠŲŪŽąčęėįšųūž_\-\. ]{2,24}$/.test(n);
   }
@@ -591,8 +606,16 @@ HTML = r"""<!doctype html>
       nickState.textContent = text;
     }
   }
+  function hideSuggest(){
+    nickSuggestBox.style.display = "none";
+    nickSuggestVal.textContent = "";
+  }
+  function showSuggest(s){
+    nickSuggestVal.textContent = s;
+    nickSuggestBox.style.display = "block";
+  }
 
-  // THEME handling (Lobby + Topbar)
+  // THEME
   function setTheme(cls){
     document.body.className = cls;
     localStorage.setItem("theme", cls);
@@ -608,21 +631,30 @@ HTML = r"""<!doctype html>
     return `${proto}://${location.host}/ws?${qs}`;
   }
 
+  async function suggestNick(base){
+    try{
+      const qs = new URLSearchParams({ room: "main", base }).toString();
+      const r = await fetch(`/suggest_nick?${qs}`, { cache: "no-store" });
+      const j = await r.json();
+      if(j && j.ok && j.suggestion){
+        return String(j.suggestion);
+      }
+    }catch{}
+    return "";
+  }
+
   async function checkNickAvailabilityNow(){
+    hideSuggest();
     const n = (nickPick.value || "").trim();
     nickAvailable = false;
-
-    // kol tikrinam – neleidžiam spausti prisijungti
     joinMain.disabled = true;
 
     if(!validateNick(n)){
-      checking = false;
       setNickState("");
       setNickError("Netinkamas nick. Reikia 2–24 simbolių (raidės/skaičiai/tarpas/_-.)");
       return;
     }
 
-    checking = true;
     setNickError("");
     setNickState("Tikrinama ar nick laisvas...");
 
@@ -630,8 +662,6 @@ HTML = r"""<!doctype html>
       const qs = new URLSearchParams({ room: "main", nick: n }).toString();
       const r = await fetch(`/check_nick?${qs}`, { cache: "no-store" });
       const j = await r.json();
-
-      checking = false;
 
       if(j && j.ok){
         nickAvailable = true;
@@ -643,9 +673,14 @@ HTML = r"""<!doctype html>
         setNickState("");
         setNickError((j && j.reason) ? j.reason : "Nick užimtas arba neteisingas.");
         joinMain.disabled = true;
+
+        // auto-pasiūlymas (jei užimtas)
+        const sug = await suggestNick(n);
+        if(sug && sug.toLowerCase() !== n.toLowerCase()){
+          showSuggest(sug);
+        }
       }
     }catch{
-      checking = false;
       nickAvailable = false;
       setNickState("");
       setNickError("Nepavyko patikrinti nick (serveris nepasiekiamas).");
@@ -663,6 +698,15 @@ HTML = r"""<!doctype html>
     if(e.key === "Enter" && !joinMain.disabled) joinMain.click();
   });
 
+  applySuggest.addEventListener("click", () => {
+    const s = (nickSuggestVal.textContent || "").trim();
+    if(!s) return;
+    nickPick.value = s;
+    hideSuggest();
+    scheduleNickCheck();
+    nickPick.focus();
+  });
+
   function showLobby(show){
     lobby.style.display = show ? "flex" : "none";
     appEl.style.display = show ? "none" : "grid";
@@ -677,8 +721,36 @@ HTML = r"""<!doctype html>
     }
   }
 
+  function renderUsers(items){
+    const arr = Array.isArray(items) ? items.slice() : [];
+    arr.sort((a,b) => (a.nick||"").localeCompare(b.nick||"", "lt"));
+
+    onlineCountEl.textContent = String(arr.length);
+    usersEl.innerHTML = "";
+
+    for(const u of arr){
+      const nn = esc(u.nick || "???");
+      const cc = esc(u.color || "#caffd9");
+      const row = document.createElement("div");
+      row.className = "user";
+      row.innerHTML = `<span class="udot" style="background:${cc}"></span><span class="uname" style="color:${cc}">${nn}</span>`;
+      row.addEventListener("click", () => {
+        // Greitas private chat: paspaudi userį -> įmeta /dm Nick
+        msgEl.value = `/dm ${u.nick} `;
+        msgEl.focus();
+      });
+      usersEl.appendChild(row);
+    }
+  }
+
+  function applyUserFilter(){
+    const q = (userSearchEl.value || "").trim().toLowerCase();
+    const items = allUsers.filter(u => (u.nick || "").toLowerCase().includes(q));
+    renderUsers(items);
+  }
+  userSearchEl.addEventListener("input", applyUserFilter);
+
   function connect(){
-    // Reset join flags
     joinEstablished = false;
     fatalJoinError = false;
 
@@ -699,24 +771,20 @@ HTML = r"""<!doctype html>
       let o = null;
       try { o = JSON.parse(ev.data); } catch { addLineHtml(esc(ev.data)); return; }
 
-      // Serverio klaidos (pvz. nick užimtas)
       if(o.type === "error"){
         fatalJoinError = true;
         stopReconnect();
-
-        // grįžtam į lobby ir rodom žinutę
         try{ ws.close(); }catch{}
+
         showLobby(true);
         setNickState("");
         setNickError(o.text || "Prisijungti nepavyko.");
         joinMain.disabled = true;
 
-        // automatiškai per-tikrinam, kad mygtukas atsirastų kai pakeis nick
         scheduleNickCheck();
         return;
       }
 
-      // jei gaunam bent vieną normalų handshake paketą, laikom, kad prisijungėm sėkmingai
       if(o.type === "topic" || o.type === "history" || o.type === "users" || o.type === "me"){
         joinEstablished = true;
       }
@@ -747,12 +815,9 @@ HTML = r"""<!doctype html>
     ws.onclose = () => {
       setConn(false);
 
-      // Jei neprisijungėm pilnai (joinEstablished=false), nelaikom to "ryšio nutrūkimu" – grįžtam į lobby be reconnect loop.
       if(!joinEstablished){
         stopReconnect();
         showLobby(true);
-
-        // Jei nebuvo gautos klaidos žinutės, duodam bendrą paaiškinimą
         if(!fatalJoinError){
           setNickError("Prisijungti nepavyko. Patikrink ar nick laisvas ir bandyk dar kartą.");
           scheduleNickCheck();
@@ -760,7 +825,6 @@ HTML = r"""<!doctype html>
         return;
       }
 
-      // Jei buvo fatali klaida – jau sutvarkyta aukščiau
       if(fatalJoinError) return;
 
       addLineHtml(`<span class="sys">[sys]</span> ryšys nutrūko, reconnect...`);
@@ -770,6 +834,7 @@ HTML = r"""<!doctype html>
 
   function renderItem(o){
     const t = esc(o.t || "");
+
     if(o.type === "msg"){
       const nn = esc(o.nick || "???");
       const cc = esc(o.color || "#caffd9");
@@ -777,6 +842,16 @@ HTML = r"""<!doctype html>
       addLineHtml(`<span class="t">[${t}]</span> <span class="nick" style="color:${cc}">${nn}</span>: <span class="msg">${tx}</span>`);
       return;
     }
+
+    if(o.type === "dm"){
+      const f = esc(o.from || "???");
+      const to = esc(o.to || "???");
+      const cc = esc(o.color || "#caffd9");
+      const tx = esc(o.text || "");
+      addLineHtml(`<span class="t">[${t}]</span> <span class="dmTag">[DM]</span> <span class="nick" style="color:${cc}">${f}</span> → <span class="nick">${to}</span>: <span class="msg">${tx}</span>`);
+      return;
+    }
+
     if(o.type === "me_action"){
       const nn = esc(o.nick || "???");
       const cc = esc(o.color || "#caffd9");
@@ -784,6 +859,7 @@ HTML = r"""<!doctype html>
       addLineHtml(`<span class="t">[${t}]</span> <span class="me" style="color:${cc}">* ${nn} ${tx}</span>`);
       return;
     }
+
     const tx = esc(o.text || "");
     addLineHtml(`<span class="t">[${t}]</span> <span class="sys">${tx}</span>`);
   }
@@ -802,7 +878,6 @@ HTML = r"""<!doctype html>
   btn.onclick = send;
   msgEl.addEventListener("keydown", (e) => { if(e.key === "Enter") send(); });
 
-  // Join flow
   joinMain.onclick = async () => {
     await checkNickAvailabilityNow();
     if(!nickAvailable) return;
@@ -816,7 +891,6 @@ HTML = r"""<!doctype html>
     connect();
   };
 
-  // Restore saved nick + theme
   (function init(){
     const savedNick = (localStorage.getItem("nick") || "").trim();
     if(savedNick) nickPick.value = savedNick;
@@ -824,7 +898,6 @@ HTML = r"""<!doctype html>
     const savedTheme = (localStorage.getItem("theme") || "theme-cyber").trim();
     setTheme(savedTheme);
 
-    // pradinis tikrinimas
     scheduleNickCheck();
     showLobby(true);
   })();
@@ -841,10 +914,6 @@ class User:
     nick: str
     color: str
     joined_at: float
-
-
-def ts() -> str:
-    return time.strftime("%H:%M:%S")
 
 
 def valid_nick(n: str) -> bool:
@@ -869,6 +938,26 @@ def is_nick_taken(room_key: str, new_nick: str) -> bool:
         if u.nick.casefold() == k:
             return True
     return False
+
+
+def find_user_ws_by_nick(room_key: str, nick: str) -> Optional[WebSocket]:
+    key = nick.casefold()
+    for w, u in ROOMS[room_key]["users"].items():
+        if u.nick.casefold() == key:
+            return w
+    return None
+
+
+def dm_key(a: str, b: str) -> Tuple[str, str]:
+    x, y = a.casefold(), b.casefold()
+    return (x, y) if x <= y else (y, x)
+
+
+def dm_history_for(a: str, b: str) -> Deque[dict]:
+    k = dm_key(a, b)
+    if k not in DM_HISTORY:
+        DM_HISTORY[k] = deque(maxlen=HISTORY_LIMIT)
+    return DM_HISTORY[k]
 
 
 async def room_broadcast(room_key: str, obj: dict, exclude: Optional[WebSocket] = None):
@@ -941,21 +1030,69 @@ async def check_nick(room: str = "main", nick: str = ""):
     return JSONResponse({"ok": True})
 
 
+def _fit_candidate(stem: str, suffix: str) -> str:
+    # užtikrina max 24
+    max_len = 24
+    stem = stem.strip()
+    if len(stem) < 2:
+        stem = "User"
+    allow = max_len - len(suffix)
+    if allow < 2:
+        # labai ekstremalu: trumpinam suffix
+        suffix = suffix[: max_len - 2]
+        allow = max_len - len(suffix)
+    stem = stem[:allow]
+    return f"{stem}{suffix}"
+
+
+@app.get("/suggest_nick")
+async def suggest_nick(room: str = "main", base: str = ""):
+    room_key = (room or "").strip()
+    b = (base or "").strip()
+
+    if room_key not in ROOMS:
+        return JSONResponse({"ok": False, "reason": "Neteisingas kanalas."})
+
+    if not b:
+        return JSONResponse({"ok": True, "suggestion": "User" + str(random.randint(100, 999))})
+
+    # jei bazė bloga, vis tiek duodam saugų pasiūlymą
+    if not valid_nick(b):
+        b = "User"
+
+    # stem: nuimam galinius skaičius (pvz Tomas12 -> Tomas)
+    stem = re.sub(r"\s*\d+$", "", b).rstrip()
+    if len(stem) < 2:
+        stem = b[:24]
+
+    async with state_lock:
+        if not is_nick_taken(room_key, b):
+            return JSONResponse({"ok": True, "suggestion": b})
+
+        for i in range(2, 10000):
+            cand = _fit_candidate(stem, str(i))
+            if valid_nick(cand) and not is_nick_taken(room_key, cand):
+                return JSONResponse({"ok": True, "suggestion": cand})
+
+    # fallback
+    return JSONResponse({"ok": True, "suggestion": _fit_candidate(stem, str(random.randint(100, 999)))})
+
+
 # =========================
 # KOMANDOS
 # =========================
 HELP_TEXT = (
     "Komandos:\n"
-    "  /help               - pagalba\n"
-    "  /who                - kas online (vardai)\n"
-    "  /topic              - parodyti temą\n"
-    "  /topic TEKSTAS      - pakeisti temą (visiems)\n"
-    "  /history [N]        - atsiųsti paskutines N žinučių (default 80)\n"
-    "  /clear              - išvalyti savo ekraną\n"
-    "  /me veiksmas        - action žinutė\n"
-    "  /roll [NdM]         - kauliukas (pvz. /roll 2d6)\n"
-    "  /flip               - monetos metimas\n"
-    "  /time               - serverio laikas\n"
+    "  /help                     - pagalba\n"
+    "  /who                      - kas online (vardai)\n"
+    "  /dm VARDAS ŽINUTĖ         - private žinutė vartotojui\n"
+    "  /topic                    - parodyti temą\n"
+    "  /topic TEKSTAS            - pakeisti temą (visiems)\n"
+    "  /history [N]              - atsiųsti paskutines N žinučių (default 80)\n"
+    "  /me veiksmas              - action žinutė\n"
+    "  /roll [NdM]               - kauliukas (pvz. /roll 2d6)\n"
+    "  /flip                     - monetos metimas\n"
+    "  /time                     - serverio laikas (Vilnius)\n"
 )
 
 
@@ -965,16 +1102,47 @@ async def handle_command(room_key: str, ws: WebSocket, text: str) -> bool:
     if not u:
         return True
 
-    if text in ("/help", "/?"):
+    low = text.lower()
+
+    if low in ("/help", "/?"):
         await room_send(ws, {"type": "sys", "t": ts(), "text": HELP_TEXT})
         return True
 
-    if text == "/who":
+    if low == "/who":
         names = sorted({uu.nick for uu in ROOMS[room_key]["users"].values()})
         await room_send(ws, {"type": "sys", "t": ts(), "text": "Online: " + ", ".join(names)})
         return True
 
-    if text.startswith("/topic"):
+    if low.startswith("/dm "):
+        parts = text.split(" ", 2)
+        if len(parts) < 3:
+            await room_send(ws, {"type": "sys", "t": ts(), "text": "Naudojimas: /dm VARDAS ŽINUTĖ"})
+            return True
+        target_nick = parts[1].strip()
+        msg = parts[2].strip()[:300]
+        if not msg:
+            return True
+
+        async with state_lock:
+            target_ws = find_user_ws_by_nick(room_key, target_nick)
+            if not target_ws:
+                await room_send(ws, {"type": "sys", "t": ts(), "text": f"Vartotojas nerastas online: {target_nick}"})
+                return True
+            target_user = ROOMS[room_key]["users"].get(target_ws)
+            if not target_user:
+                await room_send(ws, {"type": "sys", "t": ts(), "text": f"Vartotojas nerastas online: {target_nick}"})
+                return True
+
+        item = {"type": "dm", "t": ts(), "from": u.nick, "to": target_user.nick, "color": u.color, "text": msg}
+        dm_history_for(u.nick, target_user.nick).append(item)
+
+        # nusiunčiam abiem
+        await room_send(ws, item)
+        if target_ws is not ws:
+            await room_send(target_ws, item)
+        return True
+
+    if low.startswith("/topic"):
         parts = text.split(" ", 1)
         if len(parts) == 1:
             await room_send(ws, {"type": "sys", "t": ts(), "text": f"Tema: {ROOMS[room_key]['topic']}"})
@@ -985,7 +1153,7 @@ async def handle_command(room_key: str, ws: WebSocket, text: str) -> bool:
             await room_push_history(room_key, {"type": "sys", "t": ts(), "text": f"Tema pakeista į: {new_topic}"})
         return True
 
-    if text.startswith("/history"):
+    if low.startswith("/history"):
         parts = text.split(" ", 1)
         n = 80
         if len(parts) == 2:
@@ -998,11 +1166,7 @@ async def handle_command(room_key: str, ws: WebSocket, text: str) -> bool:
         await room_send(ws, {"type": "history", "items": items})
         return True
 
-    if text == "/clear":
-        await room_send(ws, {"type": "ctrl", "action": "clear"})
-        return True
-
-    if text.startswith("/me "):
+    if low.startswith("/me "):
         action = text.split(" ", 1)[1].strip()[:240]
         if not action:
             return True
@@ -1024,15 +1188,15 @@ async def handle_command(room_key: str, ws: WebSocket, text: str) -> bool:
         await room_broadcast(room_key, item)
         return True
 
-    if text == "/flip":
+    if low == "/flip":
         res = random.choice(["HERBAS", "SKAIČIUS"])
         item = {"type": "sys", "t": ts(), "text": f"{u.nick} meta monetą: {res}"}
         await room_push_history(room_key, item)
         await room_broadcast(room_key, item)
         return True
 
-    if text == "/time":
-        await room_send(ws, {"type": "sys", "t": ts(), "text": f"Serverio laikas: {ts()}"})
+    if low == "/time":
+        await room_send(ws, {"type": "sys", "t": ts(), "text": f"Serverio laikas (Vilnius): {ts()}"})
         return True
 
     return False
@@ -1046,7 +1210,6 @@ async def ws_endpoint(ws: WebSocket):
     room_key = (ws.query_params.get("room") or "").strip()
     nick = (ws.query_params.get("nick") or "").strip()
 
-    # Priimam WS, kad galėtume atsiųsti aiškų error į klientą
     await ws.accept()
 
     if room_key not in ROOMS:
@@ -1072,7 +1235,6 @@ async def ws_endpoint(ws: WebSocket):
         ROOMS[room_key]["clients"].add(ws)
         ROOMS[room_key]["users"][ws] = u
 
-    # Handshake paketai
     await room_send(ws, {"type": "topic", "text": f"{ROOMS[room_key]['title']} — {ROOMS[room_key]['topic']}"})
     await room_send(ws, {"type": "history", "items": list(ROOMS[room_key]["history"])})
     await room_send(ws, {"type": "users", "items": room_userlist(room_key)})

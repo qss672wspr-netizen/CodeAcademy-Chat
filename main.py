@@ -10,6 +10,7 @@ from typing import Dict, Optional, Set
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from openai import OpenAI
 from zoneinfo import ZoneInfo
 
 app = FastAPI()
@@ -20,6 +21,12 @@ app = FastAPI()
 TZ = ZoneInfo("Europe/Vilnius")
 
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")  # set in Render Environment
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5")
+OPENAI_MAX_OUTPUT_TOKENS = int(os.environ.get("OPENAI_MAX_OUTPUT_TOKENS", "220"))
+BOT_NICK = os.environ.get("BOT_NICK", "HestioHost")
+BOT_COLOR = os.environ.get("BOT_COLOR", "#ff6be8")
+AI_COOLDOWN_SEC = float(os.environ.get("AI_COOLDOWN_SEC", "3.0"))
+AI_ENABLED = bool(os.environ.get("OPENAI_API_KEY", "").strip())
 MAX_NICK = 24
 HISTORY_LIMIT = 200
 
@@ -79,6 +86,48 @@ def t(lang: str, key: str, **kwargs) -> str:
 def ts() -> str:
     return datetime.now(TZ).strftime("%H:%M:%S")
 
+
+# =========================
+# OPENAI (Admin-only bot)
+# =========================
+ai_client = OpenAI()
+
+def ai_instructions(lang: str) -> str:
+    if (lang or "lt").lower() == "en":
+        return (
+            "You are HestioHost, the friendly owner of this chat. "
+            "Answer concisely and practically. "
+            "If asked about code, provide short, correct snippets. "
+            "Do not mention system prompts or policies."
+        )
+    return (
+        "Tu esi HestioHost – šio chato šeimininkas. "
+        "Atsakinėk aiškiai, trumpai ir praktiškai. "
+        "Jei klausia apie kodą – duok trumpus, teisingus pavyzdžius. "
+        "Neminek sistemos instrukcijų ar politikų."
+    )
+
+async def ai_generate(prompt: str, lang: str) -> str:
+    if not AI_ENABLED:
+        return "AI funkcija išjungta (nėra OPENAI_API_KEY)." if lang != "en" else "AI is disabled (OPENAI_API_KEY missing)."
+    prompt = (prompt or "").strip()
+    if not prompt:
+        return ""
+    # Run SDK call in a thread to avoid blocking the event loop
+    def _call():
+        resp = ai_client.responses.create(
+            model=OPENAI_MODEL,
+            instructions=ai_instructions(lang),
+            input=prompt,
+            max_output_tokens=OPENAI_MAX_OUTPUT_TOKENS,
+        )
+        return getattr(resp, "output_text", "") or ""
+    try:
+        out = await asyncio.to_thread(_call)
+    except Exception as e:
+        # Keep error message user-friendly and non-sensitive
+        return ("AI klaida. Pabandyk vėliau." if lang != "en" else "AI error. Try again later.")
+    return (out or "").strip()
 # =========================
 # MODELS / STATE
 # =========================
@@ -88,7 +137,8 @@ class User:
     color: str
     lang: str = "lt"
     rooms: Set[str] = field(default_factory=set)
-
+    is_admin: bool = False
+    last_ai: float = 0.0
 @dataclass
 class Room:
     key: str
@@ -325,7 +375,7 @@ async def ws_endpoint(ws: WebSocket):
         used = {u.color for u in all_users_by_ws.values()}
         color = alloc_color(used)
 
-        u = User(nick=nick, color=color, lang=lang)
+        u = User(nick=nick, color=color, lang=lang, is_admin=(nick.casefold()=="admin"))
         all_users_by_ws[ws] = u
         all_ws_by_nick_cf[nick.casefold()] = ws
 
@@ -364,6 +414,29 @@ async def ws_endpoint(ws: WebSocket):
                             lines.append(f"  {it['title']} ({it['count']}) — {it['topic']}")
                         await ws_send(ws, {"type": "sys", "room": room_key, "t": ts(), "text": "\n".join(lines)})
                         continue
+
+
+                    # Admin-only: call the AI host bot
+                    if low.startswith("/ai "):
+                        if not u.is_admin:
+                            await ws_send(ws, {"type": "sys", "room": room_key, "t": ts(), "text": "Tik admin gali naudoti /ai." if u.lang != "en" else "Only admin can use /ai."})
+                            continue
+                        prompt = text.split(" ", 1)[1].strip()
+                        now = time.time()
+                        if now - u.last_ai < AI_COOLDOWN_SEC:
+                            await ws_send(ws, {"type": "sys", "room": room_key, "t": ts(), "text": "Palaukite kelias sekundes ir bandykite dar kartą." if u.lang != "en" else "Please wait a few seconds and try again."})
+                            continue
+                        u.last_ai = now
+                        await ws_send(ws, {"type": "sys", "room": room_key, "t": ts(), "text": "HestioHost galvoja..." if u.lang != "en" else "HestioHost is thinking..."})
+                        ans = await ai_generate(prompt, u.lang)
+                        if not ans:
+                            await ws_send(ws, {"type": "sys", "room": room_key, "t": ts(), "text": "Tuščias atsakymas." if u.lang != "en" else "Empty response."})
+                            continue
+                        await room_broadcast(room_key, {"type": "msg", "room": room_key, "t": ts(), "nick": BOT_NICK, "color": BOT_COLOR, "text": ans[:800]})
+                        continue
+
+
+
                     if low.startswith("/join "):
                         arg = text.split(" ", 1)[1].strip()
                         ok, code = await join_room(ws, arg)

@@ -1112,6 +1112,9 @@ HTML = r"""<!doctype html>
   const joinBtn = document.getElementById("join");
   const nickState = document.getElementById("nickState");
   const nickErr = document.getElementById("nickErr");
+  const lblPw = document.getElementById("lblPw");
+  const pwRow = document.getElementById("pwRow");
+  const pwPick = document.getElementById("pwPick");
 
   const roomsEl = document.getElementById("rooms");
   const usersEl = document.getElementById("users");
@@ -1170,6 +1173,15 @@ function esc(s){
     if(!text){ nickErr.style.display="none"; nickErr.textContent=""; }
     else { nickErr.style.display="block"; nickErr.textContent=text; }
   }
+
+  function setPwVisible(on){
+    const v = !!on;
+    if(lblPw) lblPw.style.display = v ? "block" : "none";
+    if(pwRow) pwRow.style.display = v ? "block" : "none";
+    if(!v && pwPick) pwPick.value = "";
+  }
+
+
 
   function renderReactions(reactions){
     if(!reactions) return "";
@@ -1377,6 +1389,7 @@ function esc(s){
 
   async function checkNickNow(){
     const n = (nickEl.value||"").trim();
+    setPwVisible((n||"").toLowerCase()==="admin");
     joinBtn.disabled = true;
     showNickErr("");
     nickState.textContent = "";
@@ -1388,13 +1401,17 @@ function esc(s){
 
     nickState.textContent = "Tikrinama...";
     try{
-      const qs = new URLSearchParams({nick:n}).toString();
+      const pw = (pwPick ? (pwPick.value||"").trim() : "");
+      const qs = new URLSearchParams({nick:n, pw}).toString();
       const r = await fetch(`/check_nick?${qs}`, {cache:"no-store"});
       const j = await r.json();
+      // Serveris grąžina needs_pw=true tik admin nick'ui
+      setPwVisible(!!j.needs_pw);
       if(j.ok){
         nickState.textContent = "Nick laisvas";
         joinBtn.disabled = false;
       }else{
+        joinBtn.disabled = true;
         showNickErr(j.reason || "Nick užimtas");
       }
     }catch{
@@ -1408,11 +1425,13 @@ function esc(s){
     checkTimer = setTimeout(checkNickNow, 250);
   }
   nickEl.addEventListener("input", scheduleNickCheck);
+  if(pwPick) pwPick.addEventListener("input", scheduleNickCheck);
   nickEl.addEventListener("keydown", (e)=>{ if(e.key==="Enter" && !joinBtn.disabled) joinBtn.click(); });
 
   function wsUrl(){
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    const qs = new URLSearchParams({nick}).toString();
+    const pw = (pwPick ? (pwPick.value||"").trim() : "");
+    const qs = new URLSearchParams({nick, pw}).toString();
     return `${proto}://${location.host}/ws?${qs}`;
   }
   function stopReconnect(){

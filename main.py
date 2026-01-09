@@ -897,6 +897,10 @@ HTML = r"""<!doctype html>
   };
 
   let UI_LANG = (localStorage.getItem("lang") || "lt").toLowerCase();
+  let applyingLang = false;
+  let lastLangSent = "";
+  let lastLangSentAt = 0;
+
   if(!I18N[UI_LANG]) UI_LANG = "lt";
   function T(key){ return I18N[UI_LANG][key]; }
 
@@ -997,25 +1001,42 @@ HTML = r"""<!doctype html>
     else wmImg.src = DATA_LOGO_DARK;
   }
 
-  function setLang(lang){
-    UI_LANG = (lang||"lt").toLowerCase();
-    if(!I18N[UI_LANG]) UI_LANG = "lt";
+  function setLang(lang, fromUser=true){
+    const newLang = (lang||"lt").toLowerCase();
+    UI_LANG = I18N[newLang] ? newLang : "lt";
     localStorage.setItem("lang", UI_LANG);
+
+    // sync both dropdowns without triggering user-change handlers
+    applyingLang = true;
     langPick.value = UI_LANG;
-    langTop.value = UI_LANG;
+    langTop.value  = UI_LANG;
+    applyingLang = false;
+
     applyLangToUI();
     setHeader();
-    if(ws && ws.readyState===WebSocket.OPEN){
-      wsSend({type:"say", room:activeRoom, text:`/lang ${UI_LANG}`});
+
+    // only send to server on explicit user action
+    if(fromUser && ws && ws.readyState===WebSocket.OPEN){
+      const now = Date.now();
+      if(lastLangSent !== UI_LANG || (now - lastLangSentAt) > 1500){
+        lastLangSent = UI_LANG;
+        lastLangSentAt = now;
+        wsSend({type:"say", room:"main", text:`/lang ${UI_LANG}`});
+      }
     }
   }
 
   themePick.addEventListener("change", ()=>setTheme(themePick.value));
   themeTop.addEventListener("change", ()=>setTheme(themeTop.value));
-  langPick.addEventListener("change", ()=>setLang(langPick.value));
-  langTop.addEventListener("change", ()=>setLang(langTop.value));
-
-  function validateNick(n){ return /^[A-Za-z0-9ĄČĘĖĮŠŲŪŽąčęėįšųūž_\-\.\ ]{2,24}$/.test(n); }
+  langPick.addEventListener("change", ()=>{
+    if(applyingLang) return;
+    setLang(langPick.value, true);
+  });
+  langTop.addEventListener("change", ()=>{
+    if(applyingLang) return;
+    setLang(langTop.value, true);
+  });
+function validateNick(n){ return /^[A-Za-z0-9ĄČĘĖĮŠŲŪŽąčęėįšųūž_\-\.\ ]{2,24}$/.test(n); }
 
   function updatePwVisibility(){
     const n = (nickPick.value||"").trim().toLowerCase();
@@ -1136,12 +1157,16 @@ HTML = r"""<!doctype html>
 
       if(o.type==="lang") {
         if(o.lang && I18N[o.lang]) {
-          UI_LANG = o.lang;
-          localStorage.setItem("lang", UI_LANG);
-          langPick.value = UI_LANG;
-          langTop.value = UI_LANG;
-          applyLangToUI();
-          setHeader();
+          const serverLang = o.lang;
+          if(serverLang !== UI_LANG){
+            setLang(serverLang, false);
+          } else {
+            // keep dropdowns in sync
+            applyingLang = true;
+            langPick.value = UI_LANG;
+            langTop.value  = UI_LANG;
+            applyingLang = false;
+          }
         }
         return;
       }

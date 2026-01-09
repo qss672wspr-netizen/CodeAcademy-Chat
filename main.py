@@ -1,3 +1,22 @@
+# HestioRooms Web Chat (FastAPI + WebSocket + SQLite)
+# Single-file app: server + client HTML.
+# Deploy-ready for Render / any Linux hosting.
+#
+# Features:
+# - Lobby with nickname availability check (no auto guest)
+# - Rooms (#main, #games, #help) + create/join/leave
+# - Realtime online list per room (no join/leave spam in main log)
+# - Persistent room history + DM history (SQLite)
+# - Private chats (DM) + DM tabs
+# - Reactions, quote, pins, edit/delete (time-limited), typing indicator
+# - LT/EN UI + server-side language for system messages
+# - Themes including Light
+# - Keepalive ping/pong to reduce idle WS drops
+#
+# Notes:
+# - Run with ONE worker (state is partly in-memory).
+# - Recommended Python: 3.12 or 3.13 (avoid 3.14 alpha/beta on hosting).
+
 import asyncio
 import json
 import random
@@ -7,7 +26,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Deque, Dict, Optional, Set, Tuple
+from typing import Any, Deque, Dict, Optional, Set, Tuple, List
 
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -29,44 +48,27 @@ def ts() -> str:
 # CONFIG
 # =====================================
 DB_PATH = "chat.db"
-HISTORY_LIMIT = 300
+HISTORY_LIMIT = 400          # max stored in DB queries
+CLIENT_BOOT_HISTORY = 140    # how many messages to send on join
 
-EDIT_WINDOW_SEC = 5 * 60  # 5 min
+EDIT_WINDOW_SEC = 5 * 60
 
 MAX_MSG_PER_10S = 20
 MAX_CHARS_PER_10S = 2500
 
+# Allow Lithuanian letters + common symbols
 NICK_RE = re.compile(r"^[A-Za-z0-9ĄČĘĖĮŠŲŪŽąčęėįšųūž_\-\. ]{2,24}$")
 ROOM_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]{0,23}$")
 
 ROLL_RE = re.compile(r"^/roll(?:\s+(\d{1,2})d(\d{1,3}))?$", re.IGNORECASE)
 
-# Ryškiai skirtingos spalvos (didesnis kontrastas, mažiau panašių atspalvių)
+# High-contrast palette (Kelly / vivid)
 COLOR_PALETTE = [
-    "#e6194b",  # red
-    "#3cb44b",  # green
-    "#ffe119",  # yellow
-    "#4363d8",  # blue
-    "#f58231",  # orange
-    "#911eb4",  # purple
-    "#46f0f0",  # cyan
-    "#f032e6",  # magenta
-    "#bcf60c",  # lime
-    "#fabebe",  # pink
-    "#008080",  # teal
-    "#e6beff",  # lavender
-    "#9a6324",  # brown
-    "#fffac8",  # light yellow
-    "#800000",  # maroon
-    "#aaffc3",  # mint
-    "#808000",  # olive
-    "#000075",  # navy
-    "#808080",  # gray
-    "#000000",  # black
-    "#ffd700",  # gold
-    "#00bfff",  # deep sky blue
-    "#ff1493",  # deep pink
-    "#7fffd4",  # aquamarine
+    "#FFB300", "#803E75", "#FF6800", "#A6BDD7", "#C10020",
+    "#CEA262", "#817066", "#007D34", "#F6768E", "#00538A",
+    "#FF7A5C", "#53377A", "#FF8E00", "#B32851", "#F4C800",
+    "#7F180D", "#93AA00", "#593315", "#F13A13", "#232C16",
+    "#0A84FF", "#30D158", "#BF5AF2", "#FFD60A",
 ]
 
 DEFAULT_ROOMS = {
@@ -80,7 +82,7 @@ DEFAULT_ROOMS = {
 # =====================================
 LANGS = {"lt", "en"}
 
-TR = {"lt": {}, "en": {}}
+TR: Dict[str, Dict[str, str]] = {"lt": {}, "en": {}}
 
 TR["lt"] = {
     "BAD_NICK": "Netinkamas nick. Grįžk ir įvesk teisingą.",
@@ -187,7 +189,7 @@ HELP_TEXT_LT = (
     "  /who                           - kas online (aktyviame kanale)\n"
     "  /dm VARDAS ŽINUTĖ              - private žinutė (DM)\n"
     "  /dmhistory VARDAS [N]          - DM istorija su vartotoju\n"
-    "  /history [N]                   - kanalo istorija (default 120)\n"
+    "  /history [N]                   - kanalo istorija (default 140)\n"
     "  /me veiksmas                   - action žinutė\n"
     "  /roll [NdM]                    - kauliukas (pvz. /roll 2d6)\n"
     "  /flip                          - monetos metimas\n"
@@ -197,7 +199,7 @@ HELP_TEXT_LT = (
     "  /quote ID                      - pacituoti žinutę\n"
     "  /edit ID NAUJAS_TEKSTAS         - redaguoti savo žinutę (iki 5 min)\n"
     "  /del ID                        - ištrinti savo žinutę (iki 5 min)\n"
-    "  /react ID 😀                    - reakcija į žinutę\n"
+    "  /react ID 😀                    - reakcija į žinutę (ALT+click ant žinutės)\n"
     "  /game start                    - pradėti 'Guess 1..100' žaidimą kanale\n"
     "  /guess SKAIČIUS                - spėti skaičių (aktyviame kanale)\n"
     "  /lang lt|en                    - pakeisti kalbą\n"
@@ -214,7 +216,7 @@ HELP_TEXT_EN = (
     "  /who                           - who is online (active channel)\n"
     "  /dm NAME MESSAGE               - private message (DM)\n"
     "  /dmhistory NAME [N]            - DM history with a user\n"
-    "  /history [N]                   - channel history (default 120)\n"
+    "  /history [N]                   - channel history (default 140)\n"
     "  /me action                     - action message\n"
     "  /roll [NdM]                    - dice (e.g. /roll 2d6)\n"
     "  /flip                          - coin flip\n"
@@ -224,7 +226,7 @@ HELP_TEXT_EN = (
     "  /quote ID                      - quote a message\n"
     "  /edit ID NEW_TEXT              - edit own message (within 5 min)\n"
     "  /del ID                        - delete own message (within 5 min)\n"
-    "  /react ID 😀                    - react to a message\n"
+    "  /react ID 😀                    - react to a message (ALT+click on message)\n"
     "  /game start                    - start Guess 1..100 in channel\n"
     "  /guess NUMBER                  - guess number (active channel)\n"
     "  /lang lt|en                    - set language\n"
@@ -257,7 +259,7 @@ def db_init() -> None:
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           scope TEXT NOT NULL,               -- 'room' arba 'dm'
           room TEXT,                         -- jei scope='room'
-          a TEXT, b TEXT,                    -- jei scope='dm'
+          a TEXT, b TEXT,                    -- jei scope='dm' (casefold)
           msg_type TEXT NOT NULL,            -- 'msg','sys','me_action','deleted','dm'
           ts TEXT NOT NULL,
           nick TEXT,
@@ -286,6 +288,7 @@ def db_init() -> None:
 
 
 db_init()
+
 
 # =====================================
 # MODELS
@@ -323,7 +326,7 @@ state_lock = asyncio.Lock()
 
 
 def valid_nick(n: str) -> bool:
-    return bool(NICK_RE.match(n))
+    return bool(NICK_RE.match(n or ""))
 
 
 def norm_room(room: str) -> str:
@@ -331,16 +334,18 @@ def norm_room(room: str) -> str:
 
 
 def valid_room_key(r: str) -> bool:
-    return bool(ROOM_RE.match(r))
+    return bool(ROOM_RE.match(r or ""))
 
 
 def alloc_color(used: Set[str]) -> str:
     for c in COLOR_PALETTE:
         if c not in used:
             return c
-    # jei pritrūko paletės – generuojam ryškų HSL
-    hue = random.randint(0, 359)
-    return f"hsl({hue}, 90%, 45%)"
+    # fallback: golden ratio jump to avoid close hues
+    # (still very distinct in practice)
+    phi = 0.61803398875
+    h = int(((len(used) * phi) % 1.0) * 360)
+    return f"hsl({h}, 90%, 45%)"
 
 
 def dm_pair(a: str, b: str) -> Tuple[str, str]:
@@ -424,8 +429,8 @@ async def db_get_message(msg_id: int) -> Optional[sqlite3.Row]:
         return row
 
 
-async def db_load_room_history(room_key: str, limit: int) -> list[dict]:
-    limit = max(1, min(limit, HISTORY_LIMIT))
+async def db_load_room_history(room_key: str, limit: int) -> List[dict]:
+    limit = max(1, min(int(limit or 1), HISTORY_LIMIT))
     async with db_lock:
         conn = db()
         cur = conn.cursor()
@@ -441,7 +446,7 @@ async def db_load_room_history(room_key: str, limit: int) -> list[dict]:
         rows = cur.fetchall()
         conn.close()
 
-    items = []
+    items: List[dict] = []
     for r in reversed(rows):
         items.append(
             {
@@ -457,8 +462,8 @@ async def db_load_room_history(room_key: str, limit: int) -> list[dict]:
     return items
 
 
-async def db_load_dm_history(a_nick: str, b_nick: str, limit: int) -> list[dict]:
-    limit = max(1, min(limit, HISTORY_LIMIT))
+async def db_load_dm_history(a_nick: str, b_nick: str, limit: int) -> List[dict]:
+    limit = max(1, min(int(limit or 1), HISTORY_LIMIT))
     a, b = dm_pair(a_nick, b_nick)
     async with db_lock:
         conn = db()
@@ -475,7 +480,7 @@ async def db_load_dm_history(a_nick: str, b_nick: str, limit: int) -> list[dict]
         rows = cur.fetchall()
         conn.close()
 
-    items = []
+    items: List[dict] = []
     for r in reversed(rows):
         extra = json_loads(r["extra"])
         items.append(
@@ -502,7 +507,7 @@ async def db_pin(room_key: str, msg_id: int) -> None:
         conn.close()
 
 
-async def db_list_pins(room_key: str, limit: int = 50) -> list[int]:
+async def db_list_pins(room_key: str, limit: int = 50) -> List[int]:
     async with db_lock:
         conn = db()
         cur = conn.cursor()
@@ -516,6 +521,9 @@ async def db_list_pins(room_key: str, limit: int = 50) -> list[int]:
 # SERVER OPERATIONS
 # =====================================
 def ensure_room(room_key: str) -> Room:
+    room_key = norm_room(room_key)
+    if not room_key:
+        room_key = "main"
     if room_key in rooms:
         return rooms[room_key]
     title = f"#{room_key}"
@@ -528,7 +536,7 @@ def ensure_room(room_key: str) -> Room:
     return r
 
 
-def room_userlist(room_key: str) -> list[dict]:
+def room_userlist(room_key: str) -> List[dict]:
     r = ensure_room(room_key)
     out = [{"nick": u.nick, "color": u.color, "status": u.status} for u in r.users.values()]
     out.sort(key=lambda x: x["nick"].casefold())
@@ -539,12 +547,13 @@ async def ws_send(ws: WebSocket, obj: dict) -> None:
     try:
         await ws.send_json(obj)
     except Exception:
+        # ignore (client might be gone)
         pass
 
 
 async def room_broadcast(room_key: str, obj: dict, exclude: Optional[WebSocket] = None) -> None:
     r = ensure_room(room_key)
-    dead = []
+    dead: List[WebSocket] = []
     for w in list(r.clients):
         if exclude is not None and w is exclude:
             continue
@@ -578,9 +587,7 @@ async def broadcast_typing(room_key: str) -> None:
 
 
 async def disconnect_ws(ws: WebSocket) -> None:
-    u: Optional[User] = None
-    rooms_to_update: Set[str] = set()
-
+    # Remove user from all state
     async with state_lock:
         u = all_users_by_ws.pop(ws, None)
         if u:
@@ -590,15 +597,15 @@ async def disconnect_ws(ws: WebSocket) -> None:
                 r.clients.discard(ws)
                 r.users.pop(ws, None)
                 r.typing.discard(u.nick)
-                rooms_to_update.add(rk)
 
     try:
         await ws.close()
     except Exception:
         pass
 
+    # Broadcast lists after releasing lock
     if u:
-        for rk in rooms_to_update:
+        for rk in list(u.rooms):
             await broadcast_userlist(rk)
             await broadcast_typing(rk)
 
@@ -620,12 +627,12 @@ async def join_room(ws: WebSocket, room_key: str) -> Tuple[bool, str]:
         r.clients.add(ws)
         r.users[ws] = u
 
-    # Svarbu: nesiunčiam "X joined" visiems; tik pačiam useriui + online sąrašas
+    # Only notify the JOINING user (no spam for others)
     await ws_send(ws, {"type": "sys", "room": room_key, "t": ts(), "text": t(u.lang, "JOIN_OK", room=ensure_room(room_key).title)})
     await broadcast_userlist(room_key)
     await broadcast_rooms_list(ws)
     await ws_send(ws, {"type": "topic", "room": room_key, "text": f"{ensure_room(room_key).title} — {ensure_room(room_key).topic}"})
-    hist = await db_load_room_history(room_key, 120)
+    hist = await db_load_room_history(room_key, CLIENT_BOOT_HISTORY)
     await ws_send(ws, {"type": "history", "room": room_key, "items": hist})
     return True, "ok"
 
@@ -725,14 +732,13 @@ async def cmd_topic(ws: WebSocket, room_key: str, arg: Optional[str]) -> None:
     await room_broadcast(room_key, {"type": "topic", "room": room_key, "text": f"{r.title} — {new_topic}"})
     await room_broadcast(room_key, {"type": "sys", "room": room_key, "t": sys_msg["ts"], "text": sys_msg["text"], "id": msg_id})
 
-    # atnaujinti rooms list (topic matosi ten)
     for w in list(r.clients):
         await broadcast_rooms_list(w)
 
 
 async def cmd_history(ws: WebSocket, room_key: str, n: int) -> None:
     room_key = norm_room(room_key)
-    n = max(1, min(n, HISTORY_LIMIT))
+    n = max(1, min(int(n or CLIENT_BOOT_HISTORY), HISTORY_LIMIT))
     items = await db_load_room_history(room_key, n)
     await ws_send(ws, {"type": "history", "room": room_key, "items": items})
 
@@ -790,7 +796,7 @@ async def cmd_dmhistory(ws: WebSocket, with_nick: str, n: int) -> None:
     u = all_users_by_ws.get(ws)
     if not u:
         return
-    n = max(1, min(n, HISTORY_LIMIT))
+    n = max(1, min(int(n or 120), HISTORY_LIMIT))
     items = await db_load_dm_history(u.nick, with_nick, n)
     await ws_send(ws, {"type": "dm_history", "with": with_nick, "items": items})
 
@@ -863,10 +869,7 @@ async def cmd_me(ws: WebSocket, room_key: str, action: str) -> None:
         "extra": {"kind": "me", "created_at": time.time(), "edited": False, "reactions": {}},
     }
     msg_id = await db_insert_message(msg)
-    await room_broadcast(
-        room_key,
-        {"type": "me_action", "room": room_key, "t": msg["ts"], "nick": u.nick, "color": u.color, "text": action, "id": msg_id, "extra": msg["extra"]},
-    )
+    await room_broadcast(room_key, {"type": "me_action", "room": room_key, "t": msg["ts"], "nick": u.nick, "color": u.color, "text": action, "id": msg_id, "extra": msg["extra"]})
 
 
 async def cmd_pin(ws: WebSocket, room_key: str, msg_id: int) -> None:
@@ -1104,8 +1107,9 @@ async def handle_command(ws: WebSocket, active_room: str, text: str) -> bool:
     if low.startswith("/join "):
         arg = t0.split(" ", 1)[1].strip()
         ok, code = await join_room(ws, arg)
-        if not ok and code == "bad_room":
-            await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "JOIN_BAD_ROOM")})
+        if not ok:
+            if code == "bad_room":
+                await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "JOIN_BAD_ROOM")})
         else:
             if code == "already":
                 await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "JOIN_ALREADY")})
@@ -1133,18 +1137,21 @@ async def handle_command(ws: WebSocket, active_room: str, text: str) -> bool:
 
     if low.startswith("/history"):
         parts = t0.split(" ", 1)
-        n = 120
+        n = CLIENT_BOOT_HISTORY
         if len(parts) == 2:
             try:
                 n = int(parts[1].strip())
             except Exception:
-                n = 120
+                n = CLIENT_BOOT_HISTORY
         await cmd_history(ws, active_room, n)
         return True
 
     if low.startswith("/dmhistory "):
         parts = t0.split(" ")
-        who = parts[1] if len(parts) >= 2 else ""
+        if len(parts) < 2:
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Usage: /dmhistory NAME [N]"})
+            return True
+        who = parts[1]
         n = 120
         if len(parts) >= 3:
             try:
@@ -1324,7 +1331,7 @@ async def suggest_nick(base: str = ""):
 
 
 # =====================================
-# CLIENT HTML (Light/Dark + LT/EN)
+# CLIENT HTML (Light/Dark + LT/EN + perf optimizations)
 # =====================================
 HTML = r"""<!doctype html>
 <html lang="lt">
@@ -1550,6 +1557,7 @@ HTML = r"""<!doctype html>
       white-space:pre-wrap;
       line-height:1.45;
       min-height:0;
+      will-change: scroll-position;
     }
     .line{ margin:2px 0; }
     .t{ color: rgba(124,255,107,.40); }
@@ -1900,6 +1908,7 @@ HTML = r"""<!doctype html>
       nickChecking: "Tikrinama ar nick laisvas...",
       nickFree: "Nick laisvas. Galite prisijungti.",
       nickTaken: "Nick užimtas. Pasirink kitą.",
+      checkFail: "Nepavyko patikrinti nick (serveris nepasiekiamas).",
       noConn: "nėra ryšio su serveriu.",
       typingOne: (u) => `${u} rašo...`,
       typingMany: (a,b,n) => `${a}, ${b} ir dar ${n} rašo...`,
@@ -1929,6 +1938,7 @@ HTML = r"""<!doctype html>
       nickChecking: "Checking nickname availability...",
       nickFree: "Nick is available. You can join.",
       nickTaken: "Nick is taken. Choose another.",
+      checkFail: "Could not check nickname (server unreachable).",
       noConn: "no connection to server.",
       typingOne: (u) => `${u} is typing...`,
       typingMany: (a,b,n) => `${a}, ${b} and ${n} more are typing...`,
@@ -1943,6 +1953,7 @@ HTML = r"""<!doctype html>
 
   function applyLangToUI(){
     document.documentElement.lang = UI_LANG;
+
     document.getElementById("lobbySub").textContent = T("lobbySub");
     document.getElementById("lblNick").textContent = T("lblNick");
     document.getElementById("suggestLabel").textContent = T("suggestLabel");
@@ -1953,9 +1964,11 @@ HTML = r"""<!doctype html>
     document.getElementById("lblStart").textContent = T("lblStart");
     document.getElementById("joinBtn").textContent = T("joinBtn");
     document.getElementById("lobbySaveHint").textContent = T("lobbySaveHint");
+
     document.getElementById("roomsTitle").textContent = T("roomsTitle");
     document.getElementById("dmTitle").textContent = T("dmTitle");
     document.getElementById("onlineTitle").textContent = T("onlineTitle");
+
     document.getElementById("roomJoin").placeholder = T("roomJoinPh");
     document.getElementById("btn").textContent = T("btnSend");
   }
@@ -1997,8 +2010,7 @@ HTML = r"""<!doctype html>
 
   // WS
   let ws = null;
-  let reconnectTimeout = null;
-  let reconnecting = false;
+  let reconnectTimer = null;
   let joinEstablished = false;
   let fatalJoinError = false;
 
@@ -2010,6 +2022,7 @@ HTML = r"""<!doctype html>
   // Convos
   const convs = new Map();
   let activeKey = "room:main";
+
   const msgDom = new Map();
 
   // Typing
@@ -2017,11 +2030,45 @@ HTML = r"""<!doctype html>
   let typingTimer = null;
   let lastTypingSend = 0;
 
+  // Perf: sidebars scheduled
+  let sidebarsScheduled = false;
+  function scheduleRenderSidebars(){
+    if(sidebarsScheduled) return;
+    sidebarsScheduled = true;
+    requestAnimationFrame(() => {
+      sidebarsScheduled = false;
+      renderSidebars();
+    });
+  }
+
+  // Perf: batch append to log
+  let pendingAppend = [];
+  let appendScheduled = false;
+  function scheduleAppend(){
+    if(appendScheduled) return;
+    appendScheduled = true;
+    requestAnimationFrame(() => {
+      appendScheduled = false;
+      if(pendingAppend.length === 0) return;
+
+      const near = isNearBottom();
+      const frag = document.createDocumentFragment();
+      for(const el of pendingAppend) frag.appendChild(el);
+      pendingAppend = [];
+      log.appendChild(frag);
+      if(near) log.scrollTop = log.scrollHeight;
+    });
+  }
+
   // ========= Utilities =========
   function esc(s){
     return (s ?? "").toString()
       .replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")
       .replaceAll('"',"&quot;").replaceAll("'","&#39;");
+  }
+
+  function isNearBottom(){
+    return (log.scrollHeight - (log.scrollTop + log.clientHeight)) < 120;
   }
 
   function setConn(ok){
@@ -2080,6 +2127,7 @@ HTML = r"""<!doctype html>
     langPick.value = UI_LANG;
     langTop.value = UI_LANG;
     applyLangToUI();
+    // tell server too (system messages)
     if(ws && ws.readyState === WebSocket.OPEN){
       wsSend({type:"say", room:"main", text:`/lang ${UI_LANG}`});
     }
@@ -2099,21 +2147,11 @@ HTML = r"""<!doctype html>
     else setTimeout(() => msgEl.focus(), 40);
   }
 
-  function clearReconnect(){
-    if(reconnectTimeout){
-      clearTimeout(reconnectTimeout);
-      reconnectTimeout = null;
+  function stopReconnect(){
+    if(reconnectTimer){
+      clearInterval(reconnectTimer);
+      reconnectTimer = null;
     }
-    reconnecting = false;
-  }
-
-  function scheduleReconnect(){
-    if(reconnecting) return;
-    reconnecting = true;
-    reconnectTimeout = setTimeout(() => {
-      reconnecting = false;
-      connect();
-    }, 1500);
   }
 
   function wsUrl(){
@@ -2122,7 +2160,7 @@ HTML = r"""<!doctype html>
     return `${proto}://${location.host}/ws?${qs}`;
   }
 
-  function tsLocal(){
+  function tsLocalFallback(){
     const d = new Date();
     const hh = String(d.getHours()).padStart(2,'0');
     const mm = String(d.getMinutes()).padStart(2,'0');
@@ -2222,11 +2260,6 @@ HTML = r"""<!doctype html>
     msgDom.clear();
   }
 
-  function addLineElement(el){
-    log.appendChild(el);
-    log.scrollTop = log.scrollHeight;
-  }
-
   function renderReactions(reactions){
     if(!reactions) return "";
     const keys = Object.keys(reactions);
@@ -2295,14 +2328,16 @@ HTML = r"""<!doctype html>
     if(!convs.has(key)) return;
     const c = convs.get(key);
     c.items.push(obj);
-    if(c.items.length > 600){
-      c.items.splice(0, c.items.length - 600);
+    if(c.items.length > 700){
+      c.items.splice(0, c.items.length - 700);
     }
     if(!noUnread && key !== activeKey){
       c.unread = (c.unread||0) + 1;
+      scheduleRenderSidebars();
     }
     if(key === activeKey){
-      addLineElement(renderMessageObj(obj));
+      pendingAppend.push(renderMessageObj(obj));
+      scheduleAppend();
     }
   }
 
@@ -2310,9 +2345,13 @@ HTML = r"""<!doctype html>
     clearLog();
     const c = convs.get(activeKey);
     if(!c) return;
+
+    const frag = document.createDocumentFragment();
     for(const obj of c.items){
-      addLineElement(renderMessageObj(obj));
+      frag.appendChild(renderMessageObj(obj));
     }
+    log.appendChild(frag);
+    log.scrollTop = log.scrollHeight;
   }
 
   // ========= Routing =========
@@ -2334,7 +2373,7 @@ HTML = r"""<!doctype html>
       for(const it of (o.items || [])){
         ensureRoomConvo(it.room, it.title, it.topic);
       }
-      renderSidebars();
+      scheduleRenderSidebars();
       if(!convs.has(activeKey)){
         ensureRoomConvo("main", "#main", "");
         setActive("room:main");
@@ -2350,7 +2389,7 @@ HTML = r"""<!doctype html>
         c.topic = (o.text || "").split("—").slice(1).join("—").trim() || c.topic;
       }
       if(activeKey === key) setHeader();
-      renderSidebars();
+      scheduleRenderSidebars();
       return;
     }
 
@@ -2372,7 +2411,7 @@ HTML = r"""<!doctype html>
         row.addEventListener("click", () => {
           if(myNick && (u.nick||"").toLowerCase() === myNick.toLowerCase()) return;
           const key = ensureDmConvo(u.nick);
-          renderSidebars();
+          scheduleRenderSidebars();
           setActive(key);
           const c = convs.get(key);
           if(c && !c.loaded){
@@ -2401,7 +2440,7 @@ HTML = r"""<!doctype html>
       const room = o.room || "main";
       const ids = o.items || [];
       const txt = ids.length ? `Pins: ${ids.map(x => "#"+x).join(", ")}` : (UI_LANG==='en' ? "No pins." : "Pin’ų nėra.");
-      pushToConvo(`room:${room}`, {type:"sys", t: tsLocal(), text: txt}, true);
+      pushToConvo(`room:${room}`, {type:"sys", t: tsLocalFallback(), text: txt}, true);
       return;
     }
 
@@ -2414,7 +2453,7 @@ HTML = r"""<!doctype html>
       return;
     }
 
-    if(o.type === "edit"){
+    if(o.type === "edit" || o.type === "delete" || o.type === "react_update"){
       const room = o.room || "main";
       const id = Number(o.id);
       const key = `room:${room}`;
@@ -2422,58 +2461,18 @@ HTML = r"""<!doctype html>
       if(c){
         const it = c.items.find(x => Number(x.id) === id);
         if(it){
-          it.text = o.text;
-          it.extra = o.extra || it.extra || {};
-          it.extra.edited = true;
-        }
-      }
-      const el = msgDom.get(id);
-      if(el && c){
-        const it2 = c.items.find(x => Number(x.id) === id);
-        if(it2){
-          const newEl = renderMessageObj(it2);
-          el.replaceWith(newEl);
-          msgDom.set(id, newEl);
-        }
-      }
-      return;
-    }
-
-    if(o.type === "delete"){
-      const room = o.room || "main";
-      const id = Number(o.id);
-      const key = `room:${room}`;
-      const c = convs.get(key);
-      if(c){
-        const it = c.items.find(x => Number(x.id) === id);
-        if(it){
-          it.type = "deleted";
-          it.text = "";
-          it.extra = {deleted:true};
-        }
-      }
-      const el = msgDom.get(id);
-      if(el && c){
-        const it2 = c.items.find(x => Number(x.id) === id);
-        if(it2){
-          const newEl = renderMessageObj(it2);
-          el.replaceWith(newEl);
-          msgDom.set(id, newEl);
-        }
-      }
-      return;
-    }
-
-    if(o.type === "react_update"){
-      const room = o.room || "main";
-      const id = Number(o.id);
-      const key = `room:${room}`;
-      const c = convs.get(key);
-      if(c){
-        const it = c.items.find(x => Number(x.id) === id);
-        if(it){
-          it.extra = it.extra || {};
-          it.extra.reactions = o.reactions || {};
+          if(o.type === "edit"){
+            it.text = o.text;
+            it.extra = o.extra || it.extra || {};
+            it.extra.edited = true;
+          } else if(o.type === "delete"){
+            it.type = "deleted";
+            it.text = "";
+            it.extra = {deleted:true};
+          } else {
+            it.extra = it.extra || {};
+            it.extra.reactions = o.reactions || {};
+          }
         }
       }
       const el = msgDom.get(id);
@@ -2505,7 +2504,7 @@ HTML = r"""<!doctype html>
         });
       }
       if(activeKey === key) renderActiveLog();
-      renderSidebars();
+      scheduleRenderSidebars();
       return;
     }
 
@@ -2527,22 +2526,32 @@ HTML = r"""<!doctype html>
         });
       }
       if(activeKey === key) renderActiveLog();
-      renderSidebars();
+      scheduleRenderSidebars();
       return;
     }
 
     if(o.type === "dm"){
       const peer = (myNick && (o.from||"").toLowerCase() === myNick.toLowerCase()) ? (o.to||"") : (o.from||"");
       const key = ensureDmConvo(peer);
-      renderSidebars();
-      pushToConvo(key, { id:o.id, type:"dm", t:o.t, from:o.from, to:o.to, color:o.color, text:o.text, extra:o.extra||{} }, false);
+      scheduleRenderSidebars();
+      pushToConvo(key, {
+        id:o.id, type:"dm", t:o.t, from:o.from, to:o.to, color:o.color, text:o.text, extra:o.extra||{}
+      }, false);
       return;
     }
 
+    if(o.type === "ping"){
+      wsSend({type:"pong", t: Date.now()});
+      return;
+    }
+
+    // Default: room message/sys
     const room = o.room || "main";
     const key = ensureRoomConvo(room, `#${room}`, "");
-    pushToConvo(key, { id:o.id, type:o.type, t:o.t||tsLocal(), nick:o.nick, color:o.color, text:o.text, extra:o.extra||{} }, false);
-    renderSidebars();
+    pushToConvo(key, {
+      id:o.id, type:o.type, t:o.t||tsLocalFallback(), nick:o.nick, color:o.color, text:o.text, extra:o.extra||{}
+    }, false);
+    scheduleRenderSidebars();
   }
 
   function wsSend(obj){
@@ -2555,7 +2564,6 @@ HTML = r"""<!doctype html>
     joinEstablished = false;
     fatalJoinError = false;
     setConn(false);
-    clearReconnect();
 
     convs.clear();
     ensureRoomConvo("main", "#main", "Bendras kanalas");
@@ -2564,14 +2572,14 @@ HTML = r"""<!doctype html>
     setHeader();
     renderActiveLog();
 
-    pushToConvo("room:main", {type:"sys", t: tsLocal(), text: UI_LANG==='en' ? "connecting..." : "jungiamasi..."}, true);
+    pushToConvo("room:main", {type:"sys", t: tsLocalFallback(), text: UI_LANG==='en' ? "connecting..." : "jungiamasi..."}, true);
 
     ws = new WebSocket(wsUrl());
 
     ws.onopen = () => {
       setConn(true);
-      clearReconnect();
-      // server-side language sync
+      stopReconnect();
+      // ensure server language is set early
       wsSend({type:"say", room:"main", text:`/lang ${UI_LANG}`});
     };
 
@@ -2579,15 +2587,9 @@ HTML = r"""<!doctype html>
       let o = null;
       try { o = JSON.parse(ev.data); } catch { return; }
 
-      // KEEPALIVE: server ping -> client pong
-      if(o && o.type === "ping"){
-        wsSend({ type: "pong", t: Date.now() });
-        return;
-      }
-
       if(o.type === "error"){
         fatalJoinError = true;
-        clearReconnect();
+        stopReconnect();
         try{ ws.close(); }catch{}
         showLobby(true);
         setNickState("");
@@ -2612,9 +2614,8 @@ HTML = r"""<!doctype html>
 
     ws.onclose = () => {
       setConn(false);
-
       if(!joinEstablished){
-        clearReconnect();
+        stopReconnect();
         showLobby(true);
         if(!fatalJoinError){
           setNickError(UI_LANG==='en'
@@ -2624,11 +2625,10 @@ HTML = r"""<!doctype html>
         }
         return;
       }
-
       if(fatalJoinError) return;
 
-      pushToConvo("room:main", {type:"sys", t: tsLocal(), text: UI_LANG==='en' ? "connection lost, reconnect..." : "ryšys nutrūko, reconnect..."}, false);
-      scheduleReconnect();
+      pushToConvo("room:main", {type:"sys", t: tsLocalFallback(), text: UI_LANG==='en' ? "connection lost, reconnect..." : "ryšys nutrūko, reconnect..."}, false);
+      if(!reconnectTimer) reconnectTimer = setInterval(connect, 1500);
     };
   }
 
@@ -2671,7 +2671,7 @@ HTML = r"""<!doctype html>
     if(!c) return;
 
     if(!ws || ws.readyState !== WebSocket.OPEN){
-      pushToConvo(activeKey, {type:"sys", t: tsLocal(), text: T("noConn")}, false);
+      pushToConvo(activeKey, {type:"sys", t: tsLocalFallback(), text: T("noConn")}, false);
       return;
     }
 
@@ -2679,7 +2679,11 @@ HTML = r"""<!doctype html>
     setTyping(false);
 
     if(text.startsWith("/")){
-      wsSend({type:"say", room:"main", text}); // komandas leidžiam iš bet kur
+      if(c.kind === "room"){
+        wsSend({type:"say", room:c.room, text});
+      }else{
+        wsSend({type:"say", room:"main", text});
+      }
       msgEl.value = "";
       return;
     }
@@ -2756,7 +2760,7 @@ HTML = r"""<!doctype html>
     }catch{
       nickAvailable = false;
       setNickState("");
-      setNickError(T("CHECK_FAIL"));
+      setNickError(T("checkFail"));
       joinBtn.disabled = true;
     }
   }
@@ -2816,18 +2820,17 @@ HTML = r"""<!doctype html>
 
 
 # =====================================
-# KEEPALIVE (Server ping)
+# WEBSOCKET KEEPALIVE
 # =====================================
-async def heartbeat_sender(ws: WebSocket):
-    """
-    Periodiškai siunčia ping, kad proxy/naršyklė nenutrauktų WS ryšio dėl 'idle timeout'.
-    """
+async def heartbeat_sender(ws: WebSocket) -> None:
+    """Periodically send ping to keep intermediaries from closing idle websockets."""
     try:
         while True:
-            await asyncio.sleep(25)  # kas 25 s
+            await asyncio.sleep(25)
             await ws.send_json({"type": "ping", "t": ts()})
     except Exception:
-        pass
+        # socket closed / cancelled
+        return
 
 
 # =====================================
@@ -2835,8 +2838,6 @@ async def heartbeat_sender(ws: WebSocket):
 # =====================================
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
-    hb_task: Optional[asyncio.Task] = None
-
     nick = (ws.query_params.get("nick") or "").strip()
     lang = (ws.query_params.get("lang") or "lt").strip().lower()
     if lang not in LANGS:
@@ -2855,6 +2856,10 @@ async def ws_endpoint(ws: WebSocket):
             await ws.close()
             return
 
+        # Ensure defaults exist
+        for rk in DEFAULT_ROOMS.keys():
+            ensure_room(rk)
+
         used = {u.color for u in all_users_by_ws.values()}
         color = alloc_color(used)
 
@@ -2862,28 +2867,23 @@ async def ws_endpoint(ws: WebSocket):
         all_users_by_ws[ws] = u
         all_ws_by_nick_cf[nick.casefold()] = ws
 
-    for rk in DEFAULT_ROOMS.keys():
-        ensure_room(rk)
-
+    # join base room and send initial UI state
     await join_room(ws, "#main")
     await broadcast_rooms_list(ws)
-    await ws_send(ws, {"type": "topic", "room": "main", "text": f"{ensure_room('main').title} — {ensure_room('main').topic}"})
     await ws_send(ws, {"type": "users", "room": "main", "items": room_userlist("main")})
     await ws_send(ws, {"type": "me", "nick": u.nick, "color": u.color})
     await ws_send(ws, {"type": "lang", "lang": u.lang})
 
-    # start keepalive after successful handshake/init
     hb_task = asyncio.create_task(heartbeat_sender(ws))
 
     try:
         while True:
             data = await ws.receive_json()
-
-            # client pong (keepalive)
-            if isinstance(data, dict) and data.get("type") == "pong":
+            if not isinstance(data, dict):
                 continue
 
-            if not isinstance(data, dict):
+            # keepalive response from client
+            if data.get("type") == "pong":
                 continue
 
             # typing event
@@ -2944,10 +2944,12 @@ async def ws_endpoint(ws: WebSocket):
 
     except WebSocketDisconnect:
         pass
+    except Exception:
+        # Any unexpected error -> disconnect cleanly
+        pass
     finally:
-        if hb_task is not None:
-            try:
-                hb_task.cancel()
-            except Exception:
-                pass
+        try:
+            hb_task.cancel()
+        except Exception:
+            pass
         await disconnect_ws(ws)

@@ -279,8 +279,15 @@ async def send_rooms_list(ws: WebSocket) -> None:
     items = []
     for k in keys:
         r = ensure_room(k)
-        items.append({"room": r.key, "title": r.title, "topic": r.topic})
+        items.append({"room": r.key, "title": r.title, "topic": r.topic, "count": len(r.users)})
     await ws_send(ws, {"type": "rooms", "t": ts(), "items": items})
+
+async def broadcast_rooms_list_all() -> None:
+    """Išsiunčia atnaujintą kanalų sąrašą visiems prisijungusiems."""
+    async with state_lock:
+        sockets = list(all_users_by_ws.keys())
+    for w in sockets:
+        await send_rooms_list(w)
 
 async def join_room(ws: WebSocket, room_key: str) -> Tuple[bool, str]:
     u = all_users_by_ws.get(ws)
@@ -304,6 +311,7 @@ async def join_room(ws: WebSocket, room_key: str) -> Tuple[bool, str]:
     await ws_send(ws, {"type": "history", "room": key, "t": ts(), "items": hist})
     await send_rooms_list(ws)
     await broadcast_userlist(key)
+    await broadcast_rooms_list_all()
     return True, "ok"
 
 async def leave_room(ws: WebSocket, room_key: str) -> Tuple[bool, str]:
@@ -328,6 +336,7 @@ async def leave_room(ws: WebSocket, room_key: str) -> Tuple[bool, str]:
 
     await send_rooms_list(ws)
     await broadcast_userlist(key)
+    await broadcast_rooms_list_all()
     return True, "ok"
 
 async def focus_room(ws: WebSocket, room_key: str) -> None:
@@ -367,6 +376,7 @@ async def disconnect_ws(ws: WebSocket) -> None:
     if u:
         for rk in list(u.rooms):
             await broadcast_userlist(rk)
+        await broadcast_rooms_list_all()
 
 def check_rate_limit(u: User, msg_len: int) -> Tuple[bool, str]:
     now = time.time()
@@ -819,7 +829,7 @@ HTML = r"""<!doctype html>
     .wm{
       position:fixed; inset:0; pointer-events:none; z-index:0;
       display:flex; align-items:center; justify-content:center;
-      opacity:.16;
+      opacity:.08;
     }
     .wm img{ width:min(760px, 78vw); height:auto; }
     .wrap{ position:relative; z-index:1; height:100%; display:grid; grid-template-rows:auto 1fr auto; gap:12px; padding:14px; box-sizing:border-box; }
@@ -851,6 +861,20 @@ HTML = r"""<!doctype html>
     .badge{
       min-width:22px; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:900;
       color:var(--bg); background:var(--accent2); display:none; align-items:center; justify-content:center;
+    }
+
+    .countpill{
+      min-width:22px;
+      padding:2px 8px;
+      border-radius:999px;
+      font-size:12px;
+      font-weight:900;
+      color:var(--bg);
+      background:var(--accent);
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      opacity:.85;
     }
 
     #log{ padding:12px 14px; overflow:auto; min-height:0; white-space:pre-wrap; line-height:1.45; }
@@ -1071,13 +1095,14 @@ HTML = r"""<!doctype html>
     </div>`;
   }
 
-  function ensureRoom(room, title, topic){
+  function ensureRoom(room, title, topic, count){
     if(!roomState.has(room)){
-      roomState.set(room, {room, title:title||("#"+room), topic:topic||"", unread:0, items:[]});
+      roomState.set(room, {room, title:title||("#"+room), topic:topic||"", count: (count??0), unread:0, items:[]});
     }else{
       const r = roomState.get(room);
       if(title) r.title = title;
       if(topic!==undefined) r.topic = topic;
+      if(count!==undefined) r.count = count;
     }
     return roomState.get(room);
   }
@@ -1090,12 +1115,16 @@ HTML = r"""<!doctype html>
       const row = document.createElement("div");
       row.className = "item" + (r.room === activeRoom ? " active" : "");
       const unread = r.unread || 0;
+      const cnt = (r.count ?? 0);
       row.innerHTML = `
         <div>
           <div class="iname">${esc(r.title)}</div>
           <div class="idesc">${esc(r.topic || "")}</div>
         </div>
-        <div class="badge" style="${unread>0 ? 'display:inline-flex;' : ''}">${unread}</div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <div class="countpill" title="online">${cnt}</div>
+          <div class="badge" style="${unread>0 ? 'display:inline-flex;' : ''}">${unread}</div>
+        </div>
       `;
       row.addEventListener("click", () => switchRoom(r.room));
       roomsEl.appendChild(row);
@@ -1324,7 +1353,7 @@ HTML = r"""<!doctype html>
       }
       if(o.type === "rooms"){
         for(const it of (o.items || [])){
-          ensureRoom(it.room, it.title, it.topic);
+          ensureRoom(it.room, it.title, it.topic, it.count);
         }
         renderRooms();
         return;
@@ -1343,6 +1372,9 @@ HTML = r"""<!doctype html>
         const room = o.room || "main";
         if(room === activeRoom){
           renderUsers(o.items || []);
+          const rr = ensureRoom(room);
+          rr.count = (o.items || []).length;
+          renderRooms();
         }
         return;
       }

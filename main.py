@@ -485,7 +485,6 @@ HTML = r"""<!doctype html>
       border-radius:var(--radius);
       background:linear-gradient(180deg, var(--panel), rgba(0,0,0,0));
       box-shadow:var(--shadow);
-      backdrop-filter: blur(10px);
     }
     .brand{ display:flex; gap:10px; align-items:baseline; min-width: 220px; }
     .brand .title{ font-weight:900; color:var(--accent); }
@@ -547,7 +546,6 @@ HTML = r"""<!doctype html>
       border-radius:var(--radius);
       background:var(--panel2);
       box-shadow:var(--shadow);
-      backdrop-filter: blur(10px);
       overflow:hidden;
       min-height:0;
       position:relative;
@@ -610,7 +608,7 @@ HTML = r"""<!doctype html>
       user-select:none;
     }
     body.theme-light .item{ background:rgba(11,18,32,.03); border-color:rgba(11,18,32,.06); }
-    .item:hover{ filter:brightness(1.04); }
+    .item:hover{ /* filter removed for performance */ }
     .item.active{
       border-color: rgba(124,255,107,.28);
       background: rgba(124,255,107,.06);
@@ -658,7 +656,6 @@ HTML = r"""<!doctype html>
       border-radius:var(--radius);
       background:var(--panel);
       box-shadow:var(--shadow);
-      backdrop-filter: blur(10px);
     }
     .bottombar input{
       width:100%; padding:12px 12px;
@@ -699,7 +696,6 @@ HTML = r"""<!doctype html>
       border-radius:18px;
       background:var(--panel);
       box-shadow:0 24px 70px rgba(0,0,0,.35);
-      backdrop-filter: blur(12px);
       overflow:hidden;
     }
     .card-head{ padding:16px 18px; border-bottom:1px solid var(--border); display:flex; align-items:baseline; justify-content:space-between; gap:12px; }

@@ -4,10 +4,10 @@ import re
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Deque, Dict, Optional, Set, Tuple
+from typing import Optional, Set
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse
 
 app = FastAPI()
 
@@ -24,6 +24,7 @@ COLOR_PALETTE = [
     "#AFFFc3", "#808000", "#000080", "#808080", "#FFFFFF",
 ]
 
+# 2–24, leisti: raidės/skaičiai/tarpas/_-.
 NICK_RE = re.compile(r"^[A-Za-z0-9ĄČĘĖĮŠŲŪŽąčęėįšųūž_\-\. ]{2,24}$")
 ROLL_RE = re.compile(r"^/roll(?:\s+(\d{1,2})d(\d{1,3}))?$", re.IGNORECASE)
 
@@ -41,7 +42,7 @@ ROOMS = {
 state_lock = asyncio.Lock()
 
 # =========================
-# HTML: Lobby (nick + kanalai) + Chat UI
+# HTML: Lobby (nick + kanalai + tema) + Chat UI
 # =========================
 HTML = r"""<!doctype html>
 <html lang="lt">
@@ -63,6 +64,28 @@ HTML = r"""<!doctype html>
       --shadow:0 10px 30px rgba(0,0,0,.45);
       --radius:16px;
       --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Courier New",monospace;
+    }
+
+    /* THEMES */
+    body.theme-cyber{
+      --bg:#06080a; --panel:rgba(6,10,10,.78); --panel2:rgba(5,7,8,.70);
+      --border:rgba(124,255,107,.18); --text:#caffd9; --muted:rgba(202,255,217,.55);
+      --accent:#7cff6b; --accent2:#6be4ff;
+    }
+    body.theme-glass{
+      --bg:#0a0c12; --panel:rgba(18, 22, 35, .62); --panel2:rgba(14, 18, 28, .55);
+      --border:rgba(130,170,255,.18); --text:#e7eeff; --muted:rgba(231,238,255,.55);
+      --accent:#82aaff; --accent2:#ff6be8;
+    }
+    body.theme-matrix{
+      --bg:#020403; --panel:rgba(2, 8, 4, .70); --panel2:rgba(1, 6, 3, .60);
+      --border:rgba(124,255,107,.16); --text:#bfffd0; --muted:rgba(191,255,208,.55);
+      --accent:#00ff84; --accent2:#7cff6b;
+    }
+    body.theme-crt{
+      --bg:#050607; --panel:rgba(7, 9, 10, .78); --panel2:rgba(6, 7, 8, .68);
+      --border:rgba(255,214,107,.16); --text:#ffe9b8; --muted:rgba(255,233,184,.55);
+      --accent:#ffd66b; --accent2:#7cff6b;
     }
 
     html,body{height:100%;}
@@ -195,7 +218,7 @@ HTML = r"""<!doctype html>
       display:flex; align-items:center; gap:10px;
       padding:8px 10px;
       border-radius:14px;
-      border:1px solid rgba(255,255,255,0.03);
+      border:1px solid rgba(255,255,255,.03);
       background:rgba(0,0,0,0.12);
       margin-bottom:8px;
     }
@@ -313,11 +336,31 @@ HTML = r"""<!doctype html>
       white-space:nowrap;
     }
     .joinbtn:disabled{ opacity:.55; cursor:not-allowed; }
+
     #nickErr{
       margin-top:8px;
       color:var(--danger);
       font-size:12px;
       display:none;
+    }
+    #nickState{
+      margin-top:8px;
+      color:var(--muted);
+      font-size:12px;
+      display:none;
+    }
+
+    select.themeSel{
+      width:100%;
+      margin-top:8px;
+      padding:12px;
+      border-radius:12px;
+      border:1px solid var(--border);
+      background:rgba(0,0,0,.22);
+      color:var(--text);
+      font-family:var(--mono);
+      outline:none;
+      box-sizing:border-box;
     }
 
     @media (max-width: 900px){
@@ -327,7 +370,7 @@ HTML = r"""<!doctype html>
     }
   </style>
 </head>
-<body>
+<body class="theme-cyber">
   <div class="bg"></div>
 
   <!-- Lobby -->
@@ -348,14 +391,26 @@ HTML = r"""<!doctype html>
             <input id="nickPick" placeholder="pvz. Tomas" maxlength="24"/>
           </div>
           <div id="nickErr"></div>
+          <div id="nickState"></div>
+
           <div class="help" style="margin-top:10px;">
             Leidžiami simboliai: raidės, skaičiai, tarpas, _ - .<br/>
             Nick privalo būti unikalus (negali būti dviejų vienodų).
           </div>
 
           <div class="help" style="margin-top:12px;">
-            Patarimas: nick išsaugomas naršyklėje, kitą kartą įves automatiškai.
+            Patarimas: nick ir tema išsaugomi naršyklėje.
           </div>
+
+          <div class="help" style="margin-top:12px;">
+            Tema:
+          </div>
+          <select id="themePick" class="themeSel">
+            <option value="theme-cyber">Cyber</option>
+            <option value="theme-glass">Glass</option>
+            <option value="theme-matrix">Matrix</option>
+            <option value="theme-crt">CRT</option>
+          </select>
         </div>
 
         <div class="box">
@@ -427,7 +482,9 @@ HTML = r"""<!doctype html>
 
   const nickPick = document.getElementById("nickPick");
   const nickErr  = document.getElementById("nickErr");
+  const nickState = document.getElementById("nickState");
   const joinMain = document.getElementById("joinMain");
+  const themePick = document.getElementById("themePick");
 
   const log = document.getElementById("log");
   const msgEl = document.getElementById("msg");
@@ -448,6 +505,10 @@ HTML = r"""<!doctype html>
   let room = "main";
   let nick = "";
   let allUsers = [];
+  let fatalJoinError = false;   // jei klaida (pvz. nick užimtas) – nebereconnectinam
+  let checking = false;
+  let nickAvailable = false;
+  let checkTimer = null;
 
   function esc(s){
     return (s ?? "").toString()
@@ -502,9 +563,7 @@ HTML = r"""<!doctype html>
   }
 
   function validateNick(n){
-    // turi būti 2–24, leisti: raidės/skaičiai/tarpas/_-.
-    const ok = /^[A-Za-z0-9ĄČĘĖĮŠŲŪŽąčęėįšųūž_\-\. ]{2,24}$/.test(n);
-    return ok;
+    return /^[A-Za-z0-9ĄČĘĖĮŠŲŪŽąčęėįšųūž_\-\. ]{2,24}$/.test(n);
   }
 
   function setNickError(text){
@@ -516,19 +575,75 @@ HTML = r"""<!doctype html>
       nickErr.textContent = text;
     }
   }
-
-  function updateJoinButton(){
-    const n = (nickPick.value || "").trim();
-    if(validateNick(n)){
-      joinMain.disabled = false;
-      setNickError("");
+  function setNickState(text){
+    if(!text){
+      nickState.style.display = "none";
+      nickState.textContent = "";
     }else{
-      joinMain.disabled = true;
-      setNickError("Netinkamas nick. Reikia 2–24 simbolių (raidės/skaičiai/tarpas/_-.)");
+      nickState.style.display = "block";
+      nickState.textContent = text;
     }
   }
 
-  nickPick.addEventListener("input", updateJoinButton);
+  // Theme handling
+  function setTheme(cls){
+    document.body.className = cls;
+    localStorage.setItem("theme", cls);
+    if(themePick) themePick.value = cls;
+  }
+  if(themePick){
+    themePick.addEventListener("change", () => setTheme(themePick.value));
+  }
+
+  async function checkNickAvailabilityNow(){
+    const n = (nickPick.value || "").trim();
+    nickAvailable = false;
+
+    if(!validateNick(n)){
+      checking = false;
+      setNickState("");
+      setNickError("Netinkamas nick. Reikia 2–24 simbolių (raidės/skaičiai/tarpas/_-.)");
+      joinMain.disabled = true;
+      return;
+    }
+
+    checking = true;
+    setNickError("");
+    setNickState("Tikrinama ar nick laisvas...");
+
+    try{
+      const qs = new URLSearchParams({ room: "main", nick: n }).toString();
+      const r = await fetch(`/check_nick?${qs}`, { cache: "no-store" });
+      const j = await r.json();
+
+      checking = false;
+
+      if(j && j.ok){
+        nickAvailable = true;
+        setNickState("Nick laisvas. Galite prisijungti.");
+        setNickError("");
+        joinMain.disabled = false;
+      }else{
+        nickAvailable = false;
+        setNickState("");
+        setNickError((j && j.reason) ? j.reason : "Nick užimtas arba neteisingas.");
+        joinMain.disabled = true;
+      }
+    }catch{
+      checking = false;
+      nickAvailable = false;
+      setNickState("");
+      setNickError("Nepavyko patikrinti nick (serveris nepasiekiamas).");
+      joinMain.disabled = true;
+    }
+  }
+
+  function scheduleNickCheck(){
+    if(checkTimer) clearTimeout(checkTimer);
+    checkTimer = setTimeout(checkNickAvailabilityNow, 250);
+  }
+
+  nickPick.addEventListener("input", scheduleNickCheck);
   nickPick.addEventListener("keydown", (e) => {
     if(e.key === "Enter" && !joinMain.disabled) joinMain.click();
   });
@@ -540,9 +655,17 @@ HTML = r"""<!doctype html>
     else setTimeout(() => msgEl.focus(), 40);
   }
 
+  function stopReconnect(){
+    if(reconnectTimer){
+      clearInterval(reconnectTimer);
+      reconnectTimer = null;
+    }
+  }
+
   function connect(){
     if(ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
 
+    fatalJoinError = false; // naujas bandymas
     setConn(false);
     addLineHtml(`<span class="sys">[sys]</span> jungiamasi...`);
 
@@ -551,12 +674,26 @@ HTML = r"""<!doctype html>
     ws.onopen = () => {
       setConn(true);
       addLineHtml(`<span class="sys">[sys]</span> prisijungta.`);
-      if(reconnectTimer){ clearInterval(reconnectTimer); reconnectTimer = null; }
+      stopReconnect();
     };
 
     ws.onmessage = (ev) => {
       let o = null;
       try { o = JSON.parse(ev.data); } catch { addLineHtml(esc(ev.data)); return; }
+
+      // Serverio klaidos (pvz. nick užimtas)
+      if(o.type === "error"){
+        fatalJoinError = true;
+        stopReconnect();
+
+        // grįžtam į lobby ir rodom žinutę
+        showLobby(true);
+        setNickError(o.text || "Prisijungti nepavyko.");
+        joinMain.disabled = true;
+
+        try{ ws.close(); }catch{}
+        return;
+      }
 
       if(o.type === "topic"){
         topicEl.textContent = o.text || "#main";
@@ -573,7 +710,9 @@ HTML = r"""<!doctype html>
         return;
       }
       if(o.type === "me"){
-        meNickPill.innerHTML = `<b style="color:${esc(o.color || "#caffd9")}">${esc(o.nick || "")}</b>`;
+        const cc = esc(o.color || "#caffd9");
+        const nn = esc(o.nick || "");
+        meNickPill.innerHTML = `<b style="color:${cc}">${nn}</b>`;
         return;
       }
       renderItem(o);
@@ -581,6 +720,10 @@ HTML = r"""<!doctype html>
 
     ws.onclose = () => {
       setConn(false);
+
+      // jei buvo fatali klaida (pvz nick užimtas) – nebereconnectinam
+      if(fatalJoinError) return;
+
       addLineHtml(`<span class="sys">[sys]</span> ryšys nutrūko, reconnect...`);
       if(!reconnectTimer) reconnectTimer = setInterval(connect, 1500);
     };
@@ -602,7 +745,6 @@ HTML = r"""<!doctype html>
       addLineHtml(`<span class="t">[${t}]</span> <span class="me" style="color:${cc}">* ${nn} ${tx}</span>`);
       return;
     }
-    // sys / other
     const tx = esc(o.text || "");
     addLineHtml(`<span class="t">[${t}]</span> <span class="sys">${tx}</span>`);
   }
@@ -622,12 +764,12 @@ HTML = r"""<!doctype html>
   msgEl.addEventListener("keydown", (e) => { if(e.key === "Enter") send(); });
 
   // Join flow
-  joinMain.onclick = () => {
+  joinMain.onclick = async () => {
+    // prieš prisijungiant – dar kartą patikrinam (apsauga)
+    await checkNickAvailabilityNow();
+    if(!nickAvailable) return;
+
     const n = (nickPick.value || "").trim();
-    if(!validateNick(n)){
-      updateJoinButton();
-      return;
-    }
     nick = n;
     localStorage.setItem("nick", nick);
     room = "main";
@@ -636,13 +778,17 @@ HTML = r"""<!doctype html>
     connect();
   };
 
-  // Restore saved nick
+  // Restore saved nick + theme
   (function init(){
-    const saved = (localStorage.getItem("nick") || "").trim();
-    if(saved){
-      nickPick.value = saved;
+    const savedNick = (localStorage.getItem("nick") || "").trim();
+    if(savedNick){
+      nickPick.value = savedNick;
     }
-    updateJoinButton();
+    const savedTheme = (localStorage.getItem("theme") || "theme-cyber").trim();
+    setTheme(savedTheme);
+
+    // iškart patikrinam nick (jei yra)
+    scheduleNickCheck();
     showLobby(true);
   })();
 </script>
@@ -659,11 +805,14 @@ class User:
     color: str
     joined_at: float
 
+
 def ts() -> str:
     return time.strftime("%H:%M:%S")
 
+
 def valid_nick(n: str) -> bool:
     return bool(NICK_RE.match(n))
+
 
 def alloc_color(used: Set[str]) -> str:
     for c in COLOR_PALETTE:
@@ -672,8 +821,10 @@ def alloc_color(used: Set[str]) -> str:
     hue = random.randint(0, 359)
     return f"hsl({hue}, 90%, 60%)"
 
+
 def room_used_colors(room_key: str) -> Set[str]:
     return {u.color for u in ROOMS[room_key]["users"].values()}
+
 
 def is_nick_taken(room_key: str, new_nick: str) -> bool:
     k = new_nick.casefold()
@@ -681,6 +832,7 @@ def is_nick_taken(room_key: str, new_nick: str) -> bool:
         if u.nick.casefold() == k:
             return True
     return False
+
 
 async def room_broadcast(room_key: str, obj: dict, exclude: Optional[WebSocket] = None):
     dead = []
@@ -694,18 +846,22 @@ async def room_broadcast(room_key: str, obj: dict, exclude: Optional[WebSocket] 
     for ws in dead:
         await room_remove_client(room_key, ws)
 
+
 async def room_send(ws: WebSocket, obj: dict):
     await ws.send_json(obj)
+
 
 async def room_push_history(room_key: str, obj: dict):
     ROOMS[room_key]["history"].append(obj)
 
+
 def room_userlist(room_key: str):
-    items = [{"nick": u.nick, "color": u.color} for u in ROOMS[room_key]["users"].values()]
-    return items
+    return [{"nick": u.nick, "color": u.color} for u in ROOMS[room_key]["users"].values()]
+
 
 async def room_broadcast_userlist(room_key: str):
     await room_broadcast(room_key, {"type": "users", "items": room_userlist(room_key)})
+
 
 async def room_remove_client(room_key: str, ws: WebSocket):
     async with state_lock:
@@ -716,6 +872,7 @@ async def room_remove_client(room_key: str, ws: WebSocket):
     except Exception:
         pass
 
+
 # =========================
 # ROUTES
 # =========================
@@ -723,9 +880,29 @@ async def room_remove_client(room_key: str, ws: WebSocket):
 def home():
     return HTML
 
+
 @app.get("/health", response_class=PlainTextResponse)
 def health():
     return f"OK {ts()}"
+
+
+@app.get("/check_nick")
+async def check_nick(room: str = "main", nick: str = ""):
+    room_key = (room or "").strip()
+    n = (nick or "").strip()
+
+    if room_key not in ROOMS:
+        return JSONResponse({"ok": False, "reason": "Neteisingas kanalas."})
+
+    if not valid_nick(n):
+        return JSONResponse({"ok": False, "reason": "Netinkamas nick (2–24, raidės/skaičiai/tarpas/_-.)."})
+
+    async with state_lock:
+        if is_nick_taken(room_key, n):
+            return JSONResponse({"ok": False, "reason": "Nick užimtas. Pasirink kitą."})
+
+    return JSONResponse({"ok": True})
+
 
 # =========================
 # KOMANDOS
@@ -743,6 +920,7 @@ HELP_TEXT = (
     "  /flip               - monetos metimas\n"
     "  /time               - serverio laikas\n"
 )
+
 
 async def handle_command(room_key: str, ws: WebSocket, text: str) -> bool:
     text = text.strip()
@@ -822,36 +1000,33 @@ async def handle_command(room_key: str, ws: WebSocket, text: str) -> bool:
 
     return False
 
+
 # =========================
 # WEBSOCKET: privalomas nick prieš prisijungiant
 # =========================
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
-    # Query params iš lobby: ?room=main&nick=Tomas
     room_key = (ws.query_params.get("room") or "").strip()
     nick = (ws.query_params.get("nick") or "").strip()
 
+    # Priimam WS tik tam, kad galėtume atsiųsti aiškų error į klientą
+    await ws.accept()
+
     if room_key not in ROOMS:
-        # neteisingas kanalas
-        await ws.accept()
-        await ws.send_json({"type": "sys", "t": ts(), "text": "Neteisingas kanalas."})
+        await ws.send_json({"type": "error", "code": "BAD_ROOM", "text": "Neteisingas kanalas."})
         await ws.close()
         return
 
     if not valid_nick(nick):
-        await ws.accept()
-        await ws.send_json({"type": "sys", "t": ts(), "text": "Netinkamas nick. Grįžk ir įvesk teisingą."})
+        await ws.send_json({"type": "error", "code": "BAD_NICK", "text": "Netinkamas nick. Grįžk ir įvesk teisingą."})
         await ws.close()
         return
 
     async with state_lock:
         if is_nick_taken(room_key, nick):
-            await ws.accept()
-            await ws.send_json({"type": "sys", "t": ts(), "text": "Šis nick jau užimtas. Pasirink kitą."})
+            await ws.send_json({"type": "error", "code": "NICK_TAKEN", "text": "Nick užimtas. Pasirink kitą."})
             await ws.close()
             return
-
-        await ws.accept()
 
         used = room_used_colors(room_key)
         color = alloc_color(used)
@@ -881,7 +1056,6 @@ async def ws_endpoint(ws: WebSocket):
                 if handled:
                     continue
 
-            # paprasta žinutė
             item = {"type": "msg", "t": ts(), "nick": u.nick, "color": u.color, "text": text}
             await room_push_history(room_key, item)
             await room_broadcast(room_key, item)

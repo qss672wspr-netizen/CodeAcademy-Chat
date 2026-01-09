@@ -32,16 +32,13 @@ DB_PATH = "chat.db"
 HISTORY_LIMIT = 300
 CLIENT_CACHE_LIMIT = 600
 
-# message edit window (seconds)
 EDIT_WINDOW_SEC = 5 * 60
 
-# rate limiting (per-user)
 MAX_MSG_PER_10S = 20
 MAX_CHARS_PER_10S = 2500
 
-# Allowed nick: 2..24
 NICK_RE = re.compile(r"^[A-Za-z0-9ĄČĘĖĮŠŲŪŽąčęėįšųūž_\-\. ]{2,24}$")
-ROOM_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]{0,23}$")  # "main", "games", "help" etc.
+ROOM_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]{0,23}$")
 
 ROLL_RE = re.compile(r"^/roll(?:\s+(\d{1,2})d(\d{1,3}))?$", re.IGNORECASE)
 
@@ -49,7 +46,7 @@ COLOR_PALETTE = [
     "#E6194B", "#3CB44B", "#FFE119", "#0082C8", "#F58231",
     "#911EB4", "#46F0F0", "#F032E6", "#D2F53C", "#FABEBE",
     "#008080", "#E6BEFF", "#AA6E28", "#FFD8B1", "#800000",
-    "#AFFFc3", "#808000", "#000080", "#808080", "#FFFFFF",
+    "#AFFFc3", "#808000", "#000080", "#808080", "#111111",
 ]
 
 DEFAULT_ROOMS = {
@@ -58,7 +55,108 @@ DEFAULT_ROOMS = {
     "help": {"title": "#help", "topic": "Pagalba / klausimai"},
 }
 
-HELP_TEXT = (
+# =====================================
+# I18N (LT/EN)
+# =====================================
+LANGS = {"lt", "en"}
+
+TR = {"lt": {}, "en": {}}
+
+TR["lt"] = {
+    "BAD_NICK": "Netinkamas nick. Grįžk ir įvesk teisingą.",
+    "NICK_TAKEN": "Nick užimtas. Pasirink kitą.",
+    "CHECK_FAIL": "Nepavyko patikrinti nick (serveris nepasiekiamas).",
+    "BAD_ROOM": "Neteisingas kanalas.",
+    "JOIN_OK": "Prisijungėte prie {room}.",
+    "JOIN_ALREADY": "Jau esate šiame kanale.",
+    "JOIN_BAD_ROOM": "Netinkamas kanalo pavadinimas. Pvz: #main, #games, #help (tik a-z, 0-9, _ -).",
+    "LEAVE_NOT_MEMBER": "Jūs nesate šiame kanale.",
+    "LEAVE_MAIN_DENY": "Iš #main išeiti negalima (bazinis kanalas).",
+    "LEAVE_OK": "Palikote {room}.",
+    "DM_USAGE": "Naudojimas: /dm VARDAS ŽINUTĖ",
+    "DM_NOT_FOUND": "Vartotojas nerastas online: {nick}",
+    "TIME": "Serverio laikas (Vilnius): {t}",
+    "RATE_LIMIT": "Per daug žinučių per trumpą laiką. Palaukite kelias sekundes.",
+    "RATE_LIMIT_CHARS": "Per daug teksto per trumpą laiką. Palaukite kelias sekundes.",
+    "PINS_NONE": "Pin’ų nėra.",
+    "PIN_FAIL": "Pin nepavyko: žinutė nerasta šiame kanale.",
+    "PIN_OK": "Prisegta žinutė ID={id}.",
+    "QUOTE_FAIL": "Quote nepavyko: žinutė nerasta šiame kanale.",
+    "EDIT_FAIL_NOTFOUND": "Edit nepavyko: žinutė nerasta šiame kanale.",
+    "EDIT_FAIL_OWN": "Edit nepavyko: galima redaguoti tik savo žinutes.",
+    "EDIT_FAIL_TIME": "Edit nepavyko: praėjo laiko limitas (5 min).",
+    "EDIT_FAIL_EMPTY": "Edit nepavyko: tuščias tekstas.",
+    "DEL_FAIL_NOTFOUND": "Del nepavyko: žinutė nerasta šiame kanale.",
+    "DEL_FAIL_OWN": "Del nepavyko: galima ištrinti tik savo žinutes.",
+    "DEL_FAIL_TIME": "Del nepavyko: praėjo laiko limitas (5 min).",
+    "REACT_FAIL": "React nepavyko: žinutė nerasta.",
+    "REACT_FAIL_ROOM": "React nepavyko: žinutė ne iš šio kanalo.",
+    "REACT_USAGE": "Naudojimas: /react ID 😀",
+    "GAME_NOT_STARTED": "Žaidimas nepradėtas. Paleiskite /game start",
+    "GUESS_RANGE": "Spėjimas turi būti 1..100.",
+    "LANG_SET": "Kalba pakeista į: {lang}",
+    "LANG_USAGE": "Naudojimas: /lang lt arba /lang en",
+    "ROOMS_LIST": "Kanalai:",
+    "ONLINE_ROOM": "Online {room}: {names}",
+    "TOPIC_SHOW": "{room} tema: {topic}",
+    "TOPIC_CHANGED": "Tema pakeista į: {topic}",
+    "GAME_START": "Žaidimas pradėtas: atspėk skaičių 1..100. Komanda: /guess 42",
+}
+
+TR["en"] = {
+    "BAD_NICK": "Invalid nickname. Go back and enter a valid one.",
+    "NICK_TAKEN": "Nickname is taken. Choose another.",
+    "CHECK_FAIL": "Could not check nickname (server unreachable).",
+    "BAD_ROOM": "Invalid channel.",
+    "JOIN_OK": "You joined {room}.",
+    "JOIN_ALREADY": "You are already in this channel.",
+    "JOIN_BAD_ROOM": "Invalid channel name. Example: #main, #games, #help (only a-z, 0-9, _ -).",
+    "LEAVE_NOT_MEMBER": "You are not in this channel.",
+    "LEAVE_MAIN_DENY": "You cannot leave #main (base channel).",
+    "LEAVE_OK": "You left {room}.",
+    "DM_USAGE": "Usage: /dm NAME MESSAGE",
+    "DM_NOT_FOUND": "User not found online: {nick}",
+    "TIME": "Server time (Vilnius): {t}",
+    "RATE_LIMIT": "Too many messages too fast. Wait a few seconds.",
+    "RATE_LIMIT_CHARS": "Too much text too fast. Wait a few seconds.",
+    "PINS_NONE": "No pinned messages.",
+    "PIN_FAIL": "Pin failed: message not found in this channel.",
+    "PIN_OK": "Pinned message ID={id}.",
+    "QUOTE_FAIL": "Quote failed: message not found in this channel.",
+    "EDIT_FAIL_NOTFOUND": "Edit failed: message not found in this channel.",
+    "EDIT_FAIL_OWN": "Edit failed: you can only edit your own messages.",
+    "EDIT_FAIL_TIME": "Edit failed: time limit exceeded (5 min).",
+    "EDIT_FAIL_EMPTY": "Edit failed: empty text.",
+    "DEL_FAIL_NOTFOUND": "Delete failed: message not found in this channel.",
+    "DEL_FAIL_OWN": "Delete failed: you can only delete your own messages.",
+    "DEL_FAIL_TIME": "Delete failed: time limit exceeded (5 min).",
+    "REACT_FAIL": "React failed: message not found.",
+    "REACT_FAIL_ROOM": "React failed: message is not from this channel.",
+    "REACT_USAGE": "Usage: /react ID 😀",
+    "GAME_NOT_STARTED": "Game not started. Run /game start",
+    "GUESS_RANGE": "Guess must be between 1 and 100.",
+    "LANG_SET": "Language set to: {lang}",
+    "LANG_USAGE": "Usage: /lang lt or /lang en",
+    "ROOMS_LIST": "Channels:",
+    "ONLINE_ROOM": "Online {room}: {names}",
+    "TOPIC_SHOW": "{room} topic: {topic}",
+    "TOPIC_CHANGED": "Topic changed to: {topic}",
+    "GAME_START": "Game started: guess a number 1..100. Command: /guess 42",
+}
+
+
+def t(lang: str, key: str, **kwargs) -> str:
+    lang = (lang or "lt").lower()
+    if lang not in LANGS:
+        lang = "lt"
+    s = TR[lang].get(key, key)
+    try:
+        return s.format(**kwargs)
+    except Exception:
+        return s
+
+
+HELP_TEXT_LT = (
     "Komandos:\n"
     "  /help                          - pagalba\n"
     "  /rooms                         - kanalų sąrašas\n"
@@ -82,16 +180,48 @@ HELP_TEXT = (
     "  /react ID 😀                    - reakcija į žinutę\n"
     "  /game start                    - pradėti 'Guess 1..100' žaidimą kanale\n"
     "  /guess SKAIČIUS                - spėti skaičių (aktyviame kanale)\n"
+    "  /lang lt|en                    - pakeisti kalbą\n"
 )
 
+HELP_TEXT_EN = (
+    "Commands:\n"
+    "  /help                          - help\n"
+    "  /rooms                         - list channels\n"
+    "  /join #room                    - join/create a channel\n"
+    "  /leave #room                   - leave a channel\n"
+    "  /topic                         - show topic (active channel)\n"
+    "  /topic TEXT                    - set topic (active channel)\n"
+    "  /who                           - who is online (active channel)\n"
+    "  /dm NAME MESSAGE               - private message (DM)\n"
+    "  /dmhistory NAME [N]            - DM history with a user\n"
+    "  /history [N]                   - channel history (default 120)\n"
+    "  /me action                     - action message\n"
+    "  /roll [NdM]                    - dice (e.g. /roll 2d6)\n"
+    "  /flip                          - coin flip\n"
+    "  /time                          - server time (Vilnius)\n"
+    "  /pin ID                        - pin a message\n"
+    "  /pins                          - list pinned messages\n"
+    "  /quote ID                      - quote a message\n"
+    "  /edit ID NEW_TEXT              - edit own message (within 5 min)\n"
+    "  /del ID                        - delete own message (within 5 min)\n"
+    "  /react ID 😀                    - react to a message\n"
+    "  /game start                    - start Guess 1..100 in channel\n"
+    "  /guess NUMBER                  - guess number (active channel)\n"
+    "  /lang lt|en                    - set language\n"
+)
+
+
+def help_text(lang: str) -> str:
+    return HELP_TEXT_EN if (lang or "lt").lower() == "en" else HELP_TEXT_LT
+
+
 # =====================================
-# DB (SQLite) – persistencija
+# DB (SQLite)
 # =====================================
 db_lock = asyncio.Lock()
 
 
 def db() -> sqlite3.Connection:
-    # check_same_thread=False dėl async aplinkos; lock užtikrina saugumą
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
@@ -107,13 +237,13 @@ def db_init() -> None:
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           scope TEXT NOT NULL,               -- 'room' arba 'dm'
           room TEXT,                         -- jei scope='room'
-          a TEXT, b TEXT,                    -- jei scope='dm' (pair)
+          a TEXT, b TEXT,                    -- jei scope='dm'
           msg_type TEXT NOT NULL,            -- 'msg','sys','me_action','deleted'
           ts TEXT NOT NULL,
           nick TEXT,
           color TEXT,
           text TEXT,
-          extra TEXT                          -- JSON
+          extra TEXT
         )
         """
     )
@@ -128,16 +258,8 @@ def db_init() -> None:
         """
     )
 
-    cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_messages_room ON messages(scope, room, id)
-        """
-    )
-    cur.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_messages_dm ON messages(scope, a, b, id)
-        """
-    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_room ON messages(scope, room, id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_messages_dm ON messages(scope, a, b, id)")
 
     conn.commit()
     conn.close()
@@ -152,12 +274,11 @@ db_init()
 class User:
     nick: str
     color: str
-    status: str = "online"     # online/away
+    lang: str = "lt"
+    status: str = "online"
     joined_at: float = field(default_factory=time.time)
     rooms: Set[str] = field(default_factory=set)
-
-    # rate limiting
-    msg_events: Deque[Tuple[float, int]] = field(default_factory=deque)  # (time, chars)
+    msg_events: Deque[Tuple[float, int]] = field(default_factory=deque)
 
 
 @dataclass
@@ -167,8 +288,8 @@ class Room:
     topic: str
     clients: Set[WebSocket] = field(default_factory=set)
     users: Dict[WebSocket, User] = field(default_factory=dict)
-    typing: Set[str] = field(default_factory=set)  # nick set
-    game_target: Optional[int] = None  # for /game start
+    typing: Set[str] = field(default_factory=set)
+    game_target: Optional[int] = None
     game_active: bool = False
 
 
@@ -178,7 +299,6 @@ class Room:
 rooms: Dict[str, Room] = {}
 all_users_by_ws: Dict[WebSocket, User] = {}
 all_ws_by_nick_cf: Dict[str, WebSocket] = {}
-
 state_lock = asyncio.Lock()
 
 
@@ -187,8 +307,7 @@ def valid_nick(n: str) -> bool:
 
 
 def norm_room(room: str) -> str:
-    r = (room or "").strip().lstrip("#").lower()
-    return r
+    return (room or "").strip().lstrip("#").lower()
 
 
 def valid_room_key(r: str) -> bool:
@@ -200,11 +319,7 @@ def alloc_color(used: Set[str]) -> str:
         if c not in used:
             return c
     hue = random.randint(0, 359)
-    return f"hsl({hue}, 90%, 60%)"
-
-
-def room_used_colors(r: Room) -> Set[str]:
-    return {u.color for u in r.users.values()}
+    return f"hsl({hue}, 90%, 45%)"
 
 
 def dm_pair(a: str, b: str) -> Tuple[str, str]:
@@ -226,20 +341,13 @@ def json_loads(s: Optional[str]) -> dict:
 
 
 # =====================================
-# DB helpers (async-safe via lock)
+# DB helpers
 # =====================================
 async def db_insert_message(msg: dict) -> int:
-    """
-    msg fields:
-    - scope: 'room'/'dm'
-    - room OR (a,b)
-    - msg_type, ts, nick, color, text, extra(dict)
-    """
     async with db_lock:
         conn = db()
         cur = conn.cursor()
         extra = json_dumps(msg.get("extra", {}))
-
         cur.execute(
             """
             INSERT INTO messages(scope, room, a, b, msg_type, ts, nick, color, text, extra)
@@ -268,10 +376,7 @@ async def db_update_message_text(msg_id: int, new_text: str, new_extra: dict) ->
     async with db_lock:
         conn = db()
         cur = conn.cursor()
-        cur.execute(
-            "UPDATE messages SET text=?, extra=? WHERE id=?",
-            (new_text, json_dumps(new_extra), msg_id),
-        )
+        cur.execute("UPDATE messages SET text=?, extra=? WHERE id=?", (new_text, json_dumps(new_extra), msg_id))
         conn.commit()
         conn.close()
 
@@ -280,10 +385,7 @@ async def db_mark_deleted(msg_id: int) -> None:
     async with db_lock:
         conn = db()
         cur = conn.cursor()
-        cur.execute(
-            "UPDATE messages SET msg_type=?, text=?, extra=? WHERE id=?",
-            ("deleted", "", json_dumps({"deleted": True}), msg_id),
-        )
+        cur.execute("UPDATE messages SET msg_type=?, text=?, extra=? WHERE id=?", ("deleted", "", json_dumps({"deleted": True}), msg_id))
         conn.commit()
         conn.close()
 
@@ -376,15 +478,6 @@ async def db_pin(room_key: str, msg_id: int) -> None:
         conn.close()
 
 
-async def db_unpin(room_key: str, msg_id: int) -> None:
-    async with db_lock:
-        conn = db()
-        cur = conn.cursor()
-        cur.execute("DELETE FROM pins WHERE room=? AND msg_id=?", (room_key, msg_id))
-        conn.commit()
-        conn.close()
-
-
 async def db_list_pins(room_key: str, limit: int = 50) -> list[int]:
     async with db_lock:
         conn = db()
@@ -401,7 +494,6 @@ async def db_list_pins(room_key: str, limit: int = 50) -> list[int]:
 def ensure_room(room_key: str) -> Room:
     if room_key in rooms:
         return rooms[room_key]
-    # create new room (default values)
     title = f"#{room_key}"
     topic = "Naujas kanalas"
     if room_key in DEFAULT_ROOMS:
@@ -414,9 +506,7 @@ def ensure_room(room_key: str) -> Room:
 
 def room_userlist(room_key: str) -> list[dict]:
     r = ensure_room(room_key)
-    out = []
-    for u in r.users.values():
-        out.append({"nick": u.nick, "color": u.color, "status": u.status})
+    out = [{"nick": u.nick, "color": u.color, "status": u.status} for u in r.users.values()]
     out.sort(key=lambda x: x["nick"].casefold())
     return out
 
@@ -425,7 +515,6 @@ async def ws_send(ws: WebSocket, obj: dict) -> None:
     try:
         await ws.send_json(obj)
     except Exception:
-        # ignore send errors
         pass
 
 
@@ -448,11 +537,9 @@ async def broadcast_userlist(room_key: str) -> None:
 
 
 async def broadcast_rooms_list(ws: WebSocket) -> None:
-    # send only rooms where user is a member + discoverable defaults
     u = all_users_by_ws.get(ws)
     if not u:
         return
-    # include user's rooms + defaults
     keys = set(u.rooms) | set(DEFAULT_ROOMS.keys())
     items = []
     for k in sorted(keys):
@@ -461,17 +548,20 @@ async def broadcast_rooms_list(ws: WebSocket) -> None:
     await ws_send(ws, {"type": "rooms", "items": items})
 
 
+async def broadcast_typing(room_key: str) -> None:
+    r = ensure_room(room_key)
+    await room_broadcast(room_key, {"type": "typing", "room": room_key, "items": sorted(r.typing)})
+
+
 async def disconnect_ws(ws: WebSocket) -> None:
     async with state_lock:
         u = all_users_by_ws.pop(ws, None)
         if u:
             all_ws_by_nick_cf.pop(u.nick.casefold(), None)
-            # remove from rooms
             for rk in list(u.rooms):
                 r = ensure_room(rk)
                 r.clients.discard(ws)
                 r.users.pop(ws, None)
-                # typing cleanup
                 r.typing.discard(u.nick)
 
     try:
@@ -479,7 +569,6 @@ async def disconnect_ws(ws: WebSocket) -> None:
     except Exception:
         pass
 
-    # broadcast user lists for affected rooms
     if u:
         for rk in list(u.rooms):
             await broadcast_userlist(rk)
@@ -487,78 +576,71 @@ async def disconnect_ws(ws: WebSocket) -> None:
 
 
 async def join_room(ws: WebSocket, room_key: str) -> Tuple[bool, str]:
-    room_key = norm_room(room_key)
-    if not valid_room_key(room_key):
-        return False, "Netinkamas kanalo pavadinimas. Pvz: #main, #games, #help (tik a-z, 0-9, _ -)."
-
     u = all_users_by_ws.get(ws)
     if not u:
-        return False, "Neidentifikuotas vartotojas."
+        return False, "no_user"
+
+    room_key = norm_room(room_key)
+    if not valid_room_key(room_key):
+        return False, "bad_room"
 
     async with state_lock:
         r = ensure_room(room_key)
         if room_key in u.rooms:
-            return True, "Jau esate šiame kanale."
+            return True, "already"
         u.rooms.add(room_key)
         r.clients.add(ws)
         r.users[ws] = u
 
-    await ws_send(ws, {"type": "sys", "room": room_key, "t": ts(), "text": f"Prisijungėte prie {ensure_room(room_key).title}."})
+    await ws_send(ws, {"type": "sys", "room": room_key, "t": ts(), "text": t(u.lang, "JOIN_OK", room=ensure_room(room_key).title)})
     await broadcast_userlist(room_key)
     await broadcast_rooms_list(ws)
-    # send room topic + history snapshot
     await ws_send(ws, {"type": "topic", "room": room_key, "text": f"{ensure_room(room_key).title} — {ensure_room(room_key).topic}"})
     hist = await db_load_room_history(room_key, 120)
     await ws_send(ws, {"type": "history", "room": room_key, "items": hist})
-    return True, "OK"
+    return True, "ok"
 
 
 async def leave_room(ws: WebSocket, room_key: str) -> Tuple[bool, str]:
-    room_key = norm_room(room_key)
     u = all_users_by_ws.get(ws)
     if not u:
-        return False, "Neidentifikuotas vartotojas."
+        return False, "no_user"
 
+    room_key = norm_room(room_key)
     if room_key == "main":
-        return False, "Iš #main išeiti negalima (bazinis kanalas)."
+        return False, "deny_main"
 
     async with state_lock:
         if room_key not in u.rooms:
-            return False, "Jūs nesate šiame kanale."
+            return False, "not_member"
         u.rooms.discard(room_key)
         r = ensure_room(room_key)
         r.clients.discard(ws)
         r.users.pop(ws, None)
         r.typing.discard(u.nick)
 
-    await ws_send(ws, {"type": "sys", "t": ts(), "room": room_key, "text": f"Palikote {ensure_room(room_key).title}."})
+    await ws_send(ws, {"type": "sys", "t": ts(), "room": room_key, "text": t(u.lang, "LEAVE_OK", room=ensure_room(room_key).title)})
     await broadcast_userlist(room_key)
     await broadcast_typing(room_key)
     await broadcast_rooms_list(ws)
-    return True, "OK"
-
-
-async def broadcast_typing(room_key: str) -> None:
-    r = ensure_room(room_key)
-    await room_broadcast(room_key, {"type": "typing", "room": room_key, "items": sorted(r.typing)})
+    return True, "ok"
 
 
 def check_rate_limit(u: User, msg_len: int) -> Tuple[bool, str]:
     now = time.time()
-    # drop old
     while u.msg_events and now - u.msg_events[0][0] > 10:
         u.msg_events.popleft()
-    # compute
+
     count = len(u.msg_events)
     chars = sum(c for _, c in u.msg_events)
 
     if count >= MAX_MSG_PER_10S:
-        return False, "Per daug žinučių per trumpą laiką. Palaukite kelias sekundes."
+        return False, "rate"
     if chars + msg_len > MAX_CHARS_PER_10S:
-        return False, "Per daug teksto per trumpą laiką. Palaukite kelias sekundes."
+        return False, "rate_chars"
 
     u.msg_events.append((now, msg_len))
-    return True, "OK"
+    return True, "ok"
 
 
 # =====================================
@@ -569,7 +651,7 @@ async def cmd_rooms(ws: WebSocket) -> None:
     if not u:
         return
     keys = sorted(set(u.rooms) | set(DEFAULT_ROOMS.keys()))
-    lines = ["Kanalai:"]
+    lines = [t(u.lang, "ROOMS_LIST")]
     for k in keys:
         r = ensure_room(k)
         lines.append(f"  {r.title} — {r.topic}")
@@ -577,23 +659,28 @@ async def cmd_rooms(ws: WebSocket) -> None:
 
 
 async def cmd_who(ws: WebSocket, room_key: str) -> None:
+    u = all_users_by_ws.get(ws)
+    if not u:
+        return
     room_key = norm_room(room_key)
-    if room_key not in rooms:
-        ensure_room(room_key)
     items = room_userlist(room_key)
     names = [x["nick"] + (" (away)" if x["status"] == "away" else "") for x in items]
-    await ws_send(ws, {"type": "sys", "t": ts(), "text": f"Online {ensure_room(room_key).title}: " + ", ".join(names)})
+    await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "ONLINE_ROOM", room=ensure_room(room_key).title, names=", ".join(names))})
 
 
 async def cmd_topic(ws: WebSocket, room_key: str, arg: Optional[str]) -> None:
+    u = all_users_by_ws.get(ws)
+    if not u:
+        return
     room_key = norm_room(room_key)
     r = ensure_room(room_key)
     if not arg:
-        await ws_send(ws, {"type": "sys", "t": ts(), "text": f"{r.title} tema: {r.topic}"})
+        await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "TOPIC_SHOW", room=r.title, topic=r.topic)})
         return
+
     new_topic = arg.strip()[:120] or r.topic
     r.topic = new_topic
-    # store as sys message (optional)
+
     sys_msg = {
         "scope": "room",
         "room": room_key,
@@ -601,13 +688,14 @@ async def cmd_topic(ws: WebSocket, room_key: str, arg: Optional[str]) -> None:
         "ts": ts(),
         "nick": None,
         "color": None,
-        "text": f"Tema pakeista į: {new_topic}",
+        "text": t(u.lang, "TOPIC_CHANGED", topic=new_topic),
         "extra": {"kind": "topic_change"},
     }
     msg_id = await db_insert_message(sys_msg)
+
     await room_broadcast(room_key, {"type": "topic", "room": room_key, "text": f"{r.title} — {new_topic}"})
     await room_broadcast(room_key, {"type": "sys", "room": room_key, "t": sys_msg["ts"], "text": sys_msg["text"], "id": msg_id})
-    # update room list display for clients
+
     for w in list(r.clients):
         await broadcast_rooms_list(w)
 
@@ -625,20 +713,19 @@ async def cmd_dm(ws: WebSocket, target_nick: str, text: str) -> None:
         return
     target = (target_nick or "").strip()
     if not target or not text:
-        await ws_send(ws, {"type": "sys", "t": ts(), "text": "Naudojimas: /dm VARDAS ŽINUTĖ"})
+        await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "DM_USAGE")})
         return
 
     async with state_lock:
         target_ws = all_ws_by_nick_cf.get(target.casefold())
         if not target_ws:
-            await ws_send(ws, {"type": "sys", "t": ts(), "text": f"Vartotojas nerastas online: {target}"})
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "DM_NOT_FOUND", nick=target)})
             return
         target_user = all_users_by_ws.get(target_ws)
         if not target_user:
-            await ws_send(ws, {"type": "sys", "t": ts(), "text": f"Vartotojas nerastas online: {target}"})
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "DM_NOT_FOUND", nick=target)})
             return
 
-    # persist DM
     a, b = dm_pair(u.nick, target_user.nick)
     extra = {"from": u.nick, "to": target_user.nick}
     msg = {
@@ -664,7 +751,6 @@ async def cmd_dm(ws: WebSocket, target_nick: str, text: str) -> None:
         "text": msg["text"],
         "extra": extra,
     }
-
     await ws_send(ws, payload)
     if target_ws is not ws:
         await ws_send(target_ws, payload)
@@ -688,7 +774,8 @@ async def cmd_roll(ws: WebSocket, room_key: str, n: int, sides: int) -> None:
     sides = max(2, min(sides, 1000))
     rolls = [random.randint(1, sides) for _ in range(n)]
     total = sum(rolls)
-    text = f"{u.nick} meta {n}d{sides}: {rolls} (viso {total})"
+
+    text = f"{u.nick} {('meta' if u.lang!='en' else 'rolls')} {n}d{sides}: {rolls} (total {total})"
     msg = {
         "scope": "room",
         "room": room_key,
@@ -708,8 +795,11 @@ async def cmd_flip(ws: WebSocket, room_key: str) -> None:
     if not u:
         return
     room_key = norm_room(room_key)
-    res = random.choice(["HERBAS", "SKAIČIUS"])
-    text = f"{u.nick} meta monetą: {res}"
+    res_lt = random.choice(["HERBAS", "SKAIČIUS"])
+    res_en = "HEADS" if res_lt == "HERBAS" else "TAILS"
+    res = res_en if u.lang == "en" else res_lt
+
+    text = f"{u.nick} {('flips a coin' if u.lang=='en' else 'meta monetą')}: {res}"
     msg = {
         "scope": "room",
         "room": room_key,
@@ -740,40 +830,46 @@ async def cmd_me(ws: WebSocket, room_key: str, action: str) -> None:
         "nick": u.nick,
         "color": u.color,
         "text": action,
-        "extra": {"kind": "me"},
+        "extra": {"kind": "me", "created_at": time.time(), "edited": False, "reactions": {}},
     }
     msg_id = await db_insert_message(msg)
-    await room_broadcast(
-        room_key,
-        {"type": "me_action", "room": room_key, "t": msg["ts"], "nick": u.nick, "color": u.color, "text": action, "id": msg_id},
-    )
+    await room_broadcast(room_key, {"type": "me_action", "room": room_key, "t": msg["ts"], "nick": u.nick, "color": u.color, "text": action, "id": msg_id, "extra": msg["extra"]})
 
 
 async def cmd_pin(ws: WebSocket, room_key: str, msg_id: int) -> None:
+    u = all_users_by_ws.get(ws)
+    if not u:
+        return
     room_key = norm_room(room_key)
     row = await db_get_message(msg_id)
     if not row or row["scope"] != "room" or row["room"] != room_key:
-        await ws_send(ws, {"type": "sys", "t": ts(), "text": "Pin nepavyko: žinutė nerasta šiame kanale."})
+        await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "PIN_FAIL")})
         return
     await db_pin(room_key, msg_id)
     await room_broadcast(room_key, {"type": "pin_update", "room": room_key, "action": "pin", "id": msg_id})
-    await ws_send(ws, {"type": "sys", "t": ts(), "text": f"Prisegta žinutė ID={msg_id}."})
+    await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "PIN_OK", id=msg_id)})
 
 
 async def cmd_pins(ws: WebSocket, room_key: str) -> None:
+    u = all_users_by_ws.get(ws)
+    if not u:
+        return
     room_key = norm_room(room_key)
     ids = await db_list_pins(room_key, 50)
     if not ids:
-        await ws_send(ws, {"type": "sys", "t": ts(), "text": "Pin’ų nėra."})
+        await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "PINS_NONE")})
         return
     await ws_send(ws, {"type": "pins", "room": room_key, "items": ids})
 
 
 async def cmd_quote(ws: WebSocket, room_key: str, msg_id: int) -> None:
+    u = all_users_by_ws.get(ws)
+    if not u:
+        return
     room_key = norm_room(room_key)
     row = await db_get_message(msg_id)
     if not row or row["scope"] != "room" or row["room"] != room_key:
-        await ws_send(ws, {"type": "sys", "t": ts(), "text": "Quote nepavyko: žinutė nerasta šiame kanale."})
+        await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "QUOTE_FAIL")})
         return
     nick = row["nick"] or "sys"
     text = row["text"] or ""
@@ -787,38 +883,31 @@ async def cmd_edit(ws: WebSocket, room_key: str, msg_id: int, new_text: str) -> 
     room_key = norm_room(room_key)
     row = await db_get_message(msg_id)
     if not row or row["scope"] != "room" or row["room"] != room_key:
-        await ws_send(ws, {"type": "sys", "t": ts(), "text": "Edit nepavyko: žinutė nerasta šiame kanale."})
+        await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "EDIT_FAIL_NOTFOUND")})
         return
     if (row["nick"] or "") != u.nick:
-        await ws_send(ws, {"type": "sys", "t": ts(), "text": "Edit nepavyko: galima redaguoti tik savo žinutes."})
+        await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "EDIT_FAIL_OWN")})
         return
-    # time window
-    try:
-        # we store ts string only; use row id as proxy? We'll use insertion time (not exact), but keep window check by storing extra 'created_at' in extra
-        extra = json_loads(row["extra"])
-        created_at = extra.get("created_at")
-        if not created_at:
-            # fallback: allow edit within window based on current time and joined_at (rough) – better than nothing
-            created_at = time.time()
-    except Exception:
-        extra = {}
-        created_at = time.time()
 
-    # Better: store created_at for new messages; for old ones, allow once
-    now = time.time()
-    if extra.get("created_at") and (now - float(extra["created_at"]) > EDIT_WINDOW_SEC):
-        await ws_send(ws, {"type": "sys", "t": ts(), "text": "Edit nepavyko: praėjo laiko limitas (5 min)."})
-        return
+    extra = json_loads(row["extra"])
+    created_at = extra.get("created_at", None)
+    if created_at is not None:
+        try:
+            if time.time() - float(created_at) > EDIT_WINDOW_SEC:
+                await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "EDIT_FAIL_TIME")})
+                return
+        except Exception:
+            pass
 
     new_text = (new_text or "").strip()[:300]
     if not new_text:
-        await ws_send(ws, {"type": "sys", "t": ts(), "text": "Edit nepavyko: tuščias tekstas."})
+        await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "EDIT_FAIL_EMPTY")})
         return
 
     extra["edited"] = True
-    extra.setdefault("created_at", now)  # if missing
+    extra.setdefault("created_at", time.time())
     await db_update_message_text(msg_id, new_text, extra)
-    await room_broadcast(room_key, {"type": "edit", "room": room_key, "id": msg_id, "text": new_text, "edited": True})
+    await room_broadcast(room_key, {"type": "edit", "room": room_key, "id": msg_id, "text": new_text, "edited": True, "extra": extra})
 
 
 async def cmd_delete(ws: WebSocket, room_key: str, msg_id: int) -> None:
@@ -828,17 +917,21 @@ async def cmd_delete(ws: WebSocket, room_key: str, msg_id: int) -> None:
     room_key = norm_room(room_key)
     row = await db_get_message(msg_id)
     if not row or row["scope"] != "room" or row["room"] != room_key:
-        await ws_send(ws, {"type": "sys", "t": ts(), "text": "Del nepavyko: žinutė nerasta šiame kanale."})
+        await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "DEL_FAIL_NOTFOUND")})
         return
     if (row["nick"] or "") != u.nick:
-        await ws_send(ws, {"type": "sys", "t": ts(), "text": "Del nepavyko: galima ištrinti tik savo žinutes."})
+        await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "DEL_FAIL_OWN")})
         return
 
     extra = json_loads(row["extra"])
-    now = time.time()
-    if extra.get("created_at") and (now - float(extra["created_at"]) > EDIT_WINDOW_SEC):
-        await ws_send(ws, {"type": "sys", "t": ts(), "text": "Del nepavyko: praėjo laiko limitas (5 min)."})
-        return
+    created_at = extra.get("created_at", None)
+    if created_at is not None:
+        try:
+            if time.time() - float(created_at) > EDIT_WINDOW_SEC:
+                await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "DEL_FAIL_TIME")})
+                return
+        except Exception:
+            pass
 
     await db_mark_deleted(msg_id)
     await room_broadcast(room_key, {"type": "delete", "room": room_key, "id": msg_id})
@@ -851,21 +944,20 @@ async def cmd_react(ws: WebSocket, room_key: str, msg_id: int, emoji: str) -> No
     room_key = norm_room(room_key)
     row = await db_get_message(msg_id)
     if not row:
-        await ws_send(ws, {"type": "sys", "t": ts(), "text": "React nepavyko: žinutė nerasta."})
+        await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "REACT_FAIL")})
         return
     if row["scope"] != "room" or row["room"] != room_key:
-        await ws_send(ws, {"type": "sys", "t": ts(), "text": "React nepavyko: žinutė ne iš šio kanalo."})
+        await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "REACT_FAIL_ROOM")})
         return
 
     emoji = (emoji or "").strip()
     if not emoji:
-        await ws_send(ws, {"type": "sys", "t": ts(), "text": "Naudojimas: /react ID 😀"})
+        await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "REACT_USAGE")})
         return
-    # minimal sanity: keep small
     emoji = emoji[:8]
 
     extra = json_loads(row["extra"])
-    reactions = extra.get("reactions", {})  # emoji -> [nicks]
+    reactions = extra.get("reactions", {})
     lst = reactions.get(emoji, [])
     if u.nick in lst:
         lst.remove(u.nick)
@@ -882,12 +974,15 @@ async def cmd_react(ws: WebSocket, room_key: str, msg_id: int, emoji: str) -> No
 
 
 async def cmd_game_start(ws: WebSocket, room_key: str) -> None:
+    u = all_users_by_ws.get(ws)
+    if not u:
+        return
     room_key = norm_room(room_key)
     r = ensure_room(room_key)
     r.game_target = random.randint(1, 100)
     r.game_active = True
 
-    text = "Žaidimas pradėtas: atspėk skaičių 1..100. Komanda: /guess 42"
+    text = t(u.lang, "GAME_START")
     msg = {
         "scope": "room",
         "room": room_key,
@@ -909,33 +1004,31 @@ async def cmd_guess(ws: WebSocket, room_key: str, guess: int) -> None:
     room_key = norm_room(room_key)
     r = ensure_room(room_key)
     if not r.game_active or not r.game_target:
-        await ws_send(ws, {"type": "sys", "t": ts(), "text": "Žaidimas nepradėtas. Paleiskite /game start"})
+        await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "GAME_NOT_STARTED")})
         return
+
     guess = int(guess)
     if guess < 1 or guess > 100:
-        await ws_send(ws, {"type": "sys", "t": ts(), "text": "Spėjimas turi būti 1..100."})
+        await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "GUESS_RANGE")})
         return
 
     if guess == r.game_target:
         r.game_active = False
         target = r.game_target
         r.game_target = None
-        text = f"{u.nick} atspėjo skaičių! Buvo {target}. Jei norit dar kartą: /game start"
-        msg_type = "sys"
+        text = f"{u.nick} {'atspėjo' if u.lang!='en' else 'guessed'}! {('Buvo' if u.lang!='en' else 'It was')} {target}. /game start"
         extra = {"kind": "game_win", "by": u.nick, "target": target}
     elif guess < r.game_target:
-        text = f"{u.nick} spėja {guess}: per mažai."
-        msg_type = "sys"
+        text = f"{u.nick} {('spėja' if u.lang!='en' else 'guesses')} {guess}: {('per mažai' if u.lang!='en' else 'too low')}."
         extra = {"kind": "game_hint", "by": u.nick, "guess": guess, "hint": "low"}
     else:
-        text = f"{u.nick} spėja {guess}: per daug."
-        msg_type = "sys"
+        text = f"{u.nick} {('spėja' if u.lang!='en' else 'guesses')} {guess}: {('per daug' if u.lang!='en' else 'too high')}."
         extra = {"kind": "game_hint", "by": u.nick, "guess": guess, "hint": "high"}
 
     msg = {
         "scope": "room",
         "room": room_key,
-        "msg_type": msg_type,
+        "msg_type": "sys",
         "ts": ts(),
         "nick": None,
         "color": None,
@@ -946,15 +1039,29 @@ async def cmd_guess(ws: WebSocket, room_key: str, guess: int) -> None:
     await room_broadcast(room_key, {"type": "sys", "room": room_key, "t": msg["ts"], "text": text, "id": msg_id})
 
 
+async def cmd_lang(ws: WebSocket, lang_arg: str) -> None:
+    u = all_users_by_ws.get(ws)
+    if not u:
+        return
+    arg = (lang_arg or "").strip().lower()
+    if arg not in LANGS:
+        await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "LANG_USAGE")})
+        return
+    u.lang = arg
+    await ws_send(ws, {"type": "lang", "lang": u.lang})
+    await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "LANG_SET", lang=u.lang)})
+
+
 async def handle_command(ws: WebSocket, active_room: str, text: str) -> bool:
-    """
-    Commands are executed in context of active_room.
-    """
-    t = text.strip()
-    low = t.lower()
+    u = all_users_by_ws.get(ws)
+    if not u:
+        return True
+
+    t0 = text.strip()
+    low = t0.lower()
 
     if low in ("/help", "/?"):
-        await ws_send(ws, {"type": "sys", "t": ts(), "text": HELP_TEXT})
+        await ws_send(ws, {"type": "sys", "t": ts(), "text": help_text(u.lang)})
         return True
 
     if low == "/rooms":
@@ -962,19 +1069,24 @@ async def handle_command(ws: WebSocket, active_room: str, text: str) -> bool:
         return True
 
     if low.startswith("/join "):
-        arg = t.split(" ", 1)[1].strip()
-        if not arg:
-            return True
-        ok, msg = await join_room(ws, arg)
+        arg = t0.split(" ", 1)[1].strip()
+        ok, code = await join_room(ws, arg)
         if not ok:
-            await ws_send(ws, {"type": "sys", "t": ts(), "text": msg})
+            if code == "bad_room":
+                await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "JOIN_BAD_ROOM")})
+        else:
+            if code == "already":
+                await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "JOIN_ALREADY")})
         return True
 
     if low.startswith("/leave "):
-        arg = t.split(" ", 1)[1].strip()
-        ok, msg = await leave_room(ws, arg)
+        arg = t0.split(" ", 1)[1].strip()
+        ok, code = await leave_room(ws, arg)
         if not ok:
-            await ws_send(ws, {"type": "sys", "t": ts(), "text": msg})
+            if code == "deny_main":
+                await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "LEAVE_MAIN_DENY")})
+            elif code == "not_member":
+                await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "LEAVE_NOT_MEMBER")})
         return True
 
     if low == "/who":
@@ -982,13 +1094,13 @@ async def handle_command(ws: WebSocket, active_room: str, text: str) -> bool:
         return True
 
     if low.startswith("/topic"):
-        parts = t.split(" ", 1)
+        parts = t0.split(" ", 1)
         arg = parts[1] if len(parts) == 2 else None
         await cmd_topic(ws, active_room, arg)
         return True
 
     if low.startswith("/history"):
-        parts = t.split(" ", 1)
+        parts = t0.split(" ", 1)
         n = 120
         if len(parts) == 2:
             try:
@@ -999,10 +1111,9 @@ async def handle_command(ws: WebSocket, active_room: str, text: str) -> bool:
         return True
 
     if low.startswith("/dmhistory "):
-        parts = t.split(" ")
-        # /dmhistory Nick [N]
+        parts = t0.split(" ")
         if len(parts) < 2:
-            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Naudojimas: /dmhistory VARDAS [N]"})
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Usage: /dmhistory NAME [N]"})
             return True
         who = parts[1]
         n = 120
@@ -1015,18 +1126,18 @@ async def handle_command(ws: WebSocket, active_room: str, text: str) -> bool:
         return True
 
     if low.startswith("/dm "):
-        parts = t.split(" ", 2)
+        parts = t0.split(" ", 2)
         if len(parts) < 3:
-            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Naudojimas: /dm VARDAS ŽINUTĖ"})
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "DM_USAGE")})
             return True
         await cmd_dm(ws, parts[1], parts[2])
         return True
 
     if low.startswith("/me "):
-        await cmd_me(ws, active_room, t.split(" ", 1)[1])
+        await cmd_me(ws, active_room, t0.split(" ", 1)[1])
         return True
 
-    m = ROLL_RE.match(t)
+    m = ROLL_RE.match(t0)
     if m:
         n = int(m.group(1)) if m.group(1) else 1
         sides = int(m.group(2)) if m.group(2) else 6
@@ -1038,14 +1149,14 @@ async def handle_command(ws: WebSocket, active_room: str, text: str) -> bool:
         return True
 
     if low == "/time":
-        await ws_send(ws, {"type": "sys", "t": ts(), "text": f"Serverio laikas (Vilnius): {ts()}"})
+        await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "TIME", t=ts())})
         return True
 
     if low.startswith("/pin "):
         try:
-            msg_id = int(t.split(" ", 1)[1].strip())
+            msg_id = int(t0.split(" ", 1)[1].strip())
         except Exception:
-            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Naudojimas: /pin ID"})
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Usage: /pin ID"})
             return True
         await cmd_pin(ws, active_room, msg_id)
         return True
@@ -1056,44 +1167,44 @@ async def handle_command(ws: WebSocket, active_room: str, text: str) -> bool:
 
     if low.startswith("/quote "):
         try:
-            msg_id = int(t.split(" ", 1)[1].strip())
+            msg_id = int(t0.split(" ", 1)[1].strip())
         except Exception:
-            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Naudojimas: /quote ID"})
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Usage: /quote ID"})
             return True
         await cmd_quote(ws, active_room, msg_id)
         return True
 
     if low.startswith("/edit "):
-        parts = t.split(" ", 2)
+        parts = t0.split(" ", 2)
         if len(parts) < 3:
-            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Naudojimas: /edit ID NAUJAS_TEKSTAS"})
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Usage: /edit ID NEW_TEXT"})
             return True
         try:
             msg_id = int(parts[1])
         except Exception:
-            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Naudojimas: /edit ID NAUJAS_TEKSTAS"})
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Usage: /edit ID NEW_TEXT"})
             return True
         await cmd_edit(ws, active_room, msg_id, parts[2])
         return True
 
     if low.startswith("/del "):
         try:
-            msg_id = int(t.split(" ", 1)[1].strip())
+            msg_id = int(t0.split(" ", 1)[1].strip())
         except Exception:
-            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Naudojimas: /del ID"})
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Usage: /del ID"})
             return True
         await cmd_delete(ws, active_room, msg_id)
         return True
 
     if low.startswith("/react "):
-        parts = t.split(" ", 2)
+        parts = t0.split(" ", 2)
         if len(parts) < 3:
-            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Naudojimas: /react ID 😀"})
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "REACT_USAGE")})
             return True
         try:
             msg_id = int(parts[1])
         except Exception:
-            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Naudojimas: /react ID 😀"})
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "REACT_USAGE")})
             return True
         await cmd_react(ws, active_room, msg_id, parts[2])
         return True
@@ -1103,13 +1214,18 @@ async def handle_command(ws: WebSocket, active_room: str, text: str) -> bool:
         return True
 
     if low.startswith("/guess "):
-        parts = t.split(" ", 1)
+        parts = t0.split(" ", 1)
         try:
             guess = int(parts[1].strip())
         except Exception:
-            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Naudojimas: /guess 42"})
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Usage: /guess 42"})
             return True
         await cmd_guess(ws, active_room, guess)
+        return True
+
+    if low.startswith("/lang "):
+        parts = t0.split(" ", 1)
+        await cmd_lang(ws, parts[1] if len(parts) == 2 else "")
         return True
 
     return False
@@ -1129,13 +1245,17 @@ def health():
 
 
 @app.get("/check_nick")
-async def check_nick(nick: str = ""):
+async def check_nick(nick: str = "", lang: str = "lt"):
+    lang = (lang or "lt").lower()
+    if lang not in LANGS:
+        lang = "lt"
+
     n = (nick or "").strip()
     if not valid_nick(n):
-        return JSONResponse({"ok": False, "reason": "Netinkamas nick (2–24, raidės/skaičiai/tarpas/_-.)."})
+        return JSONResponse({"ok": False, "code": "BAD_NICK", "reason": t(lang, "BAD_NICK")})
     async with state_lock:
         if n.casefold() in all_ws_by_nick_cf:
-            return JSONResponse({"ok": False, "reason": "Nick užimtas. Pasirink kitą."})
+            return JSONResponse({"ok": False, "code": "NICK_TAKEN", "reason": t(lang, "NICK_TAKEN")})
     return JSONResponse({"ok": True})
 
 
@@ -1175,7 +1295,7 @@ async def suggest_nick(base: str = ""):
 
 
 # =====================================
-# CLIENT HTML (single page app)
+# CLIENT HTML (Light/Dark + LT/EN)
 # =====================================
 HTML = r"""<!doctype html>
 <html lang="lt">
@@ -1199,6 +1319,7 @@ HTML = r"""<!doctype html>
       --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Courier New",monospace;
     }
 
+    /* Dark themes */
     body.theme-cyber{
       --bg:#06080a; --panel:rgba(6,10,10,.78); --panel2:rgba(5,7,8,.70);
       --border:rgba(124,255,107,.18); --text:#caffd9; --muted:rgba(202,255,217,.55);
@@ -1220,6 +1341,20 @@ HTML = r"""<!doctype html>
       --accent:#ffd66b; --accent2:#7cff6b;
     }
 
+    /* Light theme (WOW) */
+    body.theme-light{
+      --bg:#f6f8fb;
+      --panel:rgba(255,255,255,.88);
+      --panel2:rgba(255,255,255,.80);
+      --border:rgba(8,20,40,.14);
+      --text:#0b1220;
+      --muted:rgba(11,18,32,.55);
+      --accent:#246BFD;
+      --accent2:#12B981;
+      --danger:#e23d3d;
+      --shadow:0 12px 28px rgba(15, 25, 35, .14);
+    }
+
     html,body{height:100%;}
     body{
       margin:0; background:var(--bg); color:var(--text);
@@ -1235,16 +1370,18 @@ HTML = r"""<!doctype html>
       background-size: 46px 46px;
       mask-image: radial-gradient(circle at 40% 10%, rgba(0,0,0,1) 0%, rgba(0,0,0,.7) 40%, rgba(0,0,0,0) 75%);
     }
+    body.theme-light .bg::before{ opacity:.10; }
     .bg::after{
-      content:""; position:absolute; inset:0; opacity:.12;
+      content:""; position:absolute; inset:0; opacity:.10;
       background: repeating-linear-gradient(
         to bottom,
         rgba(0,0,0,0) 0px,
         rgba(0,0,0,0) 2px,
-        rgba(0,0,0,.55) 3px
+        rgba(0,0,0,.40) 3px
       );
       animation: scan 8s linear infinite;
     }
+    body.theme-light .bg::after{ opacity:.04; }
     @keyframes scan{ 0%{transform:translateY(0);} 100%{transform:translateY(10px);} }
 
     .app{
@@ -1279,13 +1416,14 @@ HTML = r"""<!doctype html>
     }
     .pill{
       border:1px solid var(--border);
-      background:rgba(0,0,0,.18);
+      background:rgba(0,0,0,.10);
       padding:6px 10px;
       border-radius:999px;
       display:inline-flex; align-items:center; gap:8px;
       white-space:nowrap;
       max-width: 100%;
     }
+    body.theme-light .pill{ background:rgba(11,18,32,.04); }
     .pill span.ellip{
       overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
       max-width: 520px;
@@ -1294,7 +1432,7 @@ HTML = r"""<!doctype html>
     }
     .dot{ width:10px; height:10px; border-radius:999px; background:var(--danger);
       box-shadow:0 0 14px rgba(255,107,107,.18); }
-    .dot.ok{ background:var(--accent); box-shadow:0 0 14px rgba(124,255,107,.18); }
+    .dot.ok{ background:var(--accent2); box-shadow:0 0 14px rgba(18,185,129,.18); }
 
     .main{
       display:grid;
@@ -1312,7 +1450,6 @@ HTML = r"""<!doctype html>
       min-height:0;
     }
 
-    /* LEFT: channels */
     .sidehead{
       padding:12px 12px;
       border-bottom:1px solid var(--border);
@@ -1320,12 +1457,7 @@ HTML = r"""<!doctype html>
       color:var(--muted); font-size:13px;
     }
     .sidehead b{ color:var(--text); }
-    .sideSub{
-      padding:10px 12px;
-      border-bottom:1px solid var(--border);
-      color:var(--muted);
-      font-size:12px;
-    }
+
     .search{
       padding:10px 12px;
       border-bottom:1px solid var(--border);
@@ -1333,13 +1465,15 @@ HTML = r"""<!doctype html>
     .search input{
       width:100%; padding:10px 10px;
       font-family:var(--mono);
-      background:rgba(0,0,0,.22);
+      background:rgba(0,0,0,.12);
       border:1px solid var(--border);
       border-radius:12px;
       color:var(--text);
       outline:none;
       box-sizing:border-box;
     }
+    body.theme-light .search input{ background:rgba(11,18,32,.04); }
+
     .list{
       padding:10px 10px 12px 10px;
       overflow:auto;
@@ -1350,16 +1484,22 @@ HTML = r"""<!doctype html>
       padding:9px 10px;
       border-radius:14px;
       border:1px solid rgba(255,255,255,0.03);
-      background:rgba(0,0,0,0.12);
+      background:rgba(0,0,0,0.08);
       margin-bottom:8px;
       cursor:pointer;
       user-select:none;
     }
-    .item:hover{ filter:brightness(1.08); }
+    body.theme-light .item{ background:rgba(11,18,32,.03); border-color:rgba(11,18,32,.06); }
+    .item:hover{ filter:brightness(1.04); }
     .item.active{
       border-color: rgba(124,255,107,.28);
       background: rgba(124,255,107,.06);
     }
+    body.theme-light .item.active{
+      border-color: rgba(36,107,253,.28);
+      background: rgba(36,107,253,.06);
+    }
+
     .iname{ font-weight:900; font-size:13px; }
     .idesc{ color:var(--muted); font-size:11px; margin-top:2px; }
     .badge{
@@ -1375,7 +1515,6 @@ HTML = r"""<!doctype html>
       justify-content:center;
     }
 
-    /* CENTER: chat */
     #log{
       padding:14px 16px;
       overflow:auto;
@@ -1385,6 +1524,7 @@ HTML = r"""<!doctype html>
     }
     .line{ margin:2px 0; }
     .t{ color: rgba(124,255,107,.40); }
+    body.theme-light .t{ color: rgba(11,18,32,.38); }
     .sys{ color: var(--muted); }
     .msg{ color: var(--text); }
     .nick{ font-weight:900; }
@@ -1395,11 +1535,14 @@ HTML = r"""<!doctype html>
       font-size: 12px;
       margin-right: 8px;
     }
+    body.theme-light .idTag{ color: rgba(11,18,32,.35); }
     .meta{
       color: rgba(202,255,217,.32);
       font-size: 12px;
       margin-left: 8px;
     }
+    body.theme-light .meta{ color: rgba(11,18,32,.42); }
+
     .reactions{
       display:inline-flex;
       gap:6px;
@@ -1408,7 +1551,7 @@ HTML = r"""<!doctype html>
     }
     .react{
       border:1px solid rgba(255,255,255,.06);
-      background:rgba(0,0,0,.18);
+      background:rgba(0,0,0,.12);
       padding:2px 8px;
       border-radius:999px;
       font-size:12px;
@@ -1416,15 +1559,14 @@ HTML = r"""<!doctype html>
       cursor:pointer;
       user-select:none;
     }
+    body.theme-light .react{ background:rgba(11,18,32,.04); border-color:rgba(11,18,32,.10); }
 
-    /* RIGHT: DMs + online */
     .rightGrid{
       display:grid;
       grid-template-rows:auto 1fr auto 1fr;
       min-height:0;
     }
 
-    /* bottom */
     .bottombar{
       display:grid;
       grid-template-columns: 1fr 130px;
@@ -1439,13 +1581,14 @@ HTML = r"""<!doctype html>
     .bottombar input{
       width:100%; padding:12px 12px;
       font-family:var(--mono);
-      background:rgba(0,0,0,.22);
+      background:rgba(0,0,0,.12);
       border:1px solid var(--border);
       border-radius:12px;
       color:var(--text);
       outline:none;
       box-sizing:border-box;
     }
+    body.theme-light .bottombar input{ background:rgba(11,18,32,.04); }
     .bottombar button{
       padding:12px 12px;
       font-family:var(--mono);
@@ -1456,7 +1599,7 @@ HTML = r"""<!doctype html>
       border-radius:12px;
       cursor:pointer;
     }
-    .bottombar button:hover{ filter:brightness(1.08); }
+    .bottombar button:hover{ filter:brightness(1.06); }
     .bottombar button:disabled{ opacity:.55; cursor:not-allowed; }
 
     /* Lobby */
@@ -1467,12 +1610,13 @@ HTML = r"""<!doctype html>
       padding:18px;
       box-sizing:border-box;
     }
+    body.theme-light #lobby{ background:rgba(15, 25, 35, .45); }
     .card{
-      width:min(920px, 96vw);
+      width:min(980px, 96vw);
       border:1px solid var(--border);
       border-radius:18px;
-      background:rgba(6,10,10,.92);
-      box-shadow:0 24px 70px rgba(0,0,0,.55);
+      background:var(--panel);
+      box-shadow:0 24px 70px rgba(0,0,0,.35);
       backdrop-filter: blur(12px);
       overflow:hidden;
     }
@@ -1485,27 +1629,31 @@ HTML = r"""<!doctype html>
     .card-head .sub{ color:var(--muted); font-size:13px; }
     .card-body{
       display:grid;
-      grid-template-columns: 340px 1fr;
+      grid-template-columns: 360px 1fr;
       gap:14px;
       padding:16px 18px;
     }
     .box{
       border:1px solid var(--border);
       border-radius:16px;
-      background:rgba(0,0,0,.22);
+      background:rgba(0,0,0,.08);
       padding:12px 12px;
     }
+    body.theme-light .box{ background:rgba(11,18,32,.03); }
     .label{ color:var(--muted); font-size:12px; margin-bottom:8px; }
+    .row2{ display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
     .nickrow input{
       width:100%; padding:12px 12px;
       font-family:var(--mono);
       border-radius:12px;
       border:1px solid var(--border);
-      background:rgba(0,0,0,.22);
+      background:rgba(0,0,0,.12);
       color:var(--text);
       outline:none;
       box-sizing:border-box;
     }
+    body.theme-light .nickrow input{ background:rgba(11,18,32,.04); }
+
     #nickErr{
       margin-top:8px;
       color:var(--danger);
@@ -1522,10 +1670,11 @@ HTML = r"""<!doctype html>
       margin-top:10px;
       display:none;
       border:1px solid var(--border);
-      background:rgba(0,0,0,.18);
+      background:rgba(0,0,0,.08);
       padding:10px;
       border-radius:12px;
     }
+    body.theme-light #nickSuggestBox{ background:rgba(11,18,32,.03); }
     #nickSuggestBox b{ color:var(--text); }
     #applySuggest{
       margin-left:10px;
@@ -1551,29 +1700,25 @@ HTML = r"""<!doctype html>
     }
     .joinbtn:disabled{ opacity:.55; cursor:not-allowed; }
 
-    select.themeSel{
+    select.sel{
       padding:10px 10px;
       border-radius:12px;
       border:1px solid var(--border);
-      background:rgba(0,0,0,.22);
+      background:rgba(0,0,0,.12);
       color:var(--text);
       font-family:var(--mono);
       outline:none;
       box-sizing:border-box;
+      width: 100%;
     }
-    .themeSel.wide{ width:100%; margin-top:8px; padding:12px; }
-
-    .typingLine{
-      color: var(--muted);
-      font-size: 12px;
-      margin-left: 10px;
-    }
+    body.theme-light select.sel{ background:rgba(11,18,32,.04); }
 
     @media (max-width: 1000px){
       .main{ grid-template-columns: 1fr; }
       .status{ display:none; }
       .brand{ min-width: unset; }
       .card-body{ grid-template-columns: 1fr; }
+      .row2{ grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -1585,15 +1730,15 @@ HTML = r"""<!doctype html>
     <div class="card">
       <div class="card-head">
         <div>
-          <div class="h1">HestioRooms Chat</div>
-          <div class="sub">Įvesk slapyvardį. Kol nick neužimtas – prisijungti negalima.</div>
+          <div class="h1" id="lobbyTitle">HestioRooms Chat</div>
+          <div class="sub" id="lobbySub">Įvesk slapyvardį. Kol nick neužimtas – prisijungti negalima.</div>
         </div>
-        <div class="sub">for fun</div>
+        <div class="sub" id="lobbyTag">for fun</div>
       </div>
 
       <div class="card-body">
         <div class="box">
-          <div class="label">Slapyvardis (2–24 simboliai)</div>
+          <div class="label" id="lblNick">Slapyvardis (2–24 simboliai)</div>
           <div class="nickrow">
             <input id="nickPick" placeholder="pvz. Tomas" maxlength="24"/>
           </div>
@@ -1601,29 +1746,35 @@ HTML = r"""<!doctype html>
           <div id="nickState"></div>
 
           <div id="nickSuggestBox">
-            Siūlomas nick: <b id="nickSuggestVal"></b>
+            <span id="suggestLabel">Siūlomas nick:</span> <b id="nickSuggestVal"></b>
             <button id="applySuggest">Pritaikyti</button>
           </div>
 
-          <div class="label" style="margin-top:12px;">Tema</div>
-          <select id="themePick" class="themeSel wide">
+          <div class="label" style="margin-top:12px;" id="lblTheme">Tema</div>
+          <select id="themePick" class="sel">
             <option value="theme-cyber">Cyber</option>
             <option value="theme-glass">Glass</option>
             <option value="theme-matrix">Matrix</option>
             <option value="theme-crt">CRT</option>
+            <option value="theme-light">Light</option>
           </select>
 
-          <div class="sub" style="margin-top:12px; color:var(--muted); font-size:12px; line-height:1.35;">
+          <div class="label" style="margin-top:12px;" id="lblLang">Kalba</div>
+          <select id="langPick" class="sel">
+            <option value="lt">LT</option>
+            <option value="en">EN</option>
+          </select>
+
+          <div class="sub" style="margin-top:12px;" id="lobbyHint">
             Patarimas: /help parodo visas komandas. /join #games – žaidimų kanalas.
           </div>
         </div>
 
         <div class="box">
-          <div class="label">Start</div>
+          <div class="label" id="lblStart">Start</div>
           <button id="joinBtn" class="joinbtn" disabled>Prisijungti</button>
-
-          <div class="sub" style="margin-top:12px; color:var(--muted); font-size:12px; line-height:1.35;">
-            Nick ir tema išsaugomi naršyklėje.
+          <div class="sub" style="margin-top:12px;" id="lobbySaveHint">
+            Nick, tema ir kalba išsaugomi naršyklėje.
           </div>
         </div>
       </div>
@@ -1646,21 +1797,26 @@ HTML = r"""<!doctype html>
         <span class="pill"><span class="ellip" id="typingText"></span></span>
       </div>
 
-      <div style="display:flex; gap:10px; align-items:center;">
-        <select id="themeTop" class="themeSel" title="Keisti temą">
+      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+        <select id="langTop" class="sel" style="width:auto; min-width:86px;" title="Language">
+          <option value="lt">LT</option>
+          <option value="en">EN</option>
+        </select>
+        <select id="themeTop" class="sel" style="width:auto; min-width:140px;" title="Theme">
           <option value="theme-cyber">Cyber</option>
           <option value="theme-glass">Glass</option>
           <option value="theme-matrix">Matrix</option>
           <option value="theme-crt">CRT</option>
+          <option value="theme-light">Light</option>
         </select>
-        <div class="pill" id="meNickPill" title="Tavo nick" style="min-width:160px; justify-content:center;"></div>
+        <div class="pill" id="meNickPill" title="Me" style="min-width:160px; justify-content:center;"></div>
       </div>
     </div>
 
     <div class="main">
       <!-- Left: Channels -->
       <div class="panel" style="display:grid; grid-template-rows:auto auto 1fr; min-height:0;">
-        <div class="sidehead"><span>Kanalai</span><span>rooms</span></div>
+        <div class="sidehead"><span id="roomsTitle">Kanalai</span><span>rooms</span></div>
         <div class="search">
           <input id="roomJoin" placeholder="įrašyk #room ir Enter (pvz #games)" />
         </div>
@@ -1674,10 +1830,10 @@ HTML = r"""<!doctype html>
 
       <!-- Right: DM + Online -->
       <div class="panel rightGrid">
-        <div class="sidehead"><span>DM</span><span>tabs</span></div>
+        <div class="sidehead"><span id="dmTitle">DM</span><span>tabs</span></div>
         <div class="list" id="dms"></div>
 
-        <div class="sidehead"><span>Online: <b id="onlineCount">0</b></span><span>live</span></div>
+        <div class="sidehead"><span><span id="onlineTitle">Online</span>: <b id="onlineCount">0</b></span><span>live</span></div>
         <div class="list" id="users"></div>
       </div>
     </div>
@@ -1689,7 +1845,98 @@ HTML = r"""<!doctype html>
   </div>
 
 <script>
-  // Elements
+  // ========= I18N client =========
+  const I18N = {
+    lt: {
+      lobbySub: "Įvesk slapyvardį. Kol nick neužimtas – prisijungti negalima.",
+      lblNick: "Slapyvardis (2–24 simboliai)",
+      suggestLabel: "Siūlomas nick:",
+      applySuggest: "Pritaikyti",
+      lblTheme: "Tema",
+      lblLang: "Kalba",
+      lobbyHint: "Patarimas: /help parodo visas komandas. /join #games – žaidimų kanalas.",
+      lblStart: "Start",
+      joinBtn: "Prisijungti",
+      lobbySaveHint: "Nick, tema ir kalba išsaugomi naršyklėje.",
+      roomsTitle: "Kanalai",
+      roomJoinPh: "įrašyk #room ir Enter (pvz #games)",
+      dmTitle: "DM",
+      onlineTitle: "Online",
+      btnSend: "Siųsti",
+      msgPhRoom: (room) => `rašyk į #${room} ir Enter... (komandos: /help)`,
+      msgPhDM: (peer) => `rašyk DM ${peer} ir Enter...`,
+      connConnected: "Connected",
+      connDisconnected: "Disconnected",
+      nickInvalid: "Netinkamas nick. Reikia 2–24 simbolių (raidės/skaičiai/tarpas/_-.)",
+      nickChecking: "Tikrinama ar nick laisvas...",
+      nickFree: "Nick laisvas. Galite prisijungti.",
+      nickTaken: "Nick užimtas. Pasirink kitą.",
+      noConn: "nėra ryšio su serveriu.",
+      typingOne: (u) => `${u} rašo...`,
+      typingMany: (a,b,n) => `${a}, ${b} ir dar ${n} rašo...`,
+      reactPrompt: "Reakcija (pvz 😀):"
+    },
+    en: {
+      lobbySub: "Enter a nickname. You cannot join until it is available.",
+      lblNick: "Nickname (2–24 chars)",
+      suggestLabel: "Suggested nick:",
+      applySuggest: "Apply",
+      lblTheme: "Theme",
+      lblLang: "Language",
+      lobbyHint: "Tip: /help shows commands. /join #games opens the games channel.",
+      lblStart: "Start",
+      joinBtn: "Join",
+      lobbySaveHint: "Nick, theme and language are saved in your browser.",
+      roomsTitle: "Channels",
+      roomJoinPh: "type #room and Enter (e.g. #games)",
+      dmTitle: "DM",
+      onlineTitle: "Online",
+      btnSend: "Send",
+      msgPhRoom: (room) => `type in #${room} and Enter... (commands: /help)`,
+      msgPhDM: (peer) => `type DM to ${peer} and Enter...`,
+      connConnected: "Connected",
+      connDisconnected: "Disconnected",
+      nickInvalid: "Invalid nick. Use 2–24 chars (letters/numbers/space/_-.)",
+      nickChecking: "Checking nickname availability...",
+      nickFree: "Nick is available. You can join.",
+      nickTaken: "Nick is taken. Choose another.",
+      noConn: "no connection to server.",
+      typingOne: (u) => `${u} is typing...`,
+      typingMany: (a,b,n) => `${a}, ${b} and ${n} more are typing...`,
+      reactPrompt: "Reaction (e.g. 😀):"
+    }
+  };
+
+  let UI_LANG = (localStorage.getItem("lang") || "lt").toLowerCase();
+  if(!I18N[UI_LANG]) UI_LANG = "lt";
+
+  function T(key){
+    return I18N[UI_LANG][key];
+  }
+
+  function applyLangToUI(){
+    document.documentElement.lang = UI_LANG;
+
+    document.getElementById("lobbySub").textContent = T("lobbySub");
+    document.getElementById("lblNick").textContent = T("lblNick");
+    document.getElementById("suggestLabel").textContent = T("suggestLabel");
+    document.getElementById("applySuggest").textContent = T("applySuggest");
+    document.getElementById("lblTheme").textContent = T("lblTheme");
+    document.getElementById("lblLang").textContent = T("lblLang");
+    document.getElementById("lobbyHint").textContent = T("lobbyHint");
+    document.getElementById("lblStart").textContent = T("lblStart");
+    document.getElementById("joinBtn").textContent = T("joinBtn");
+    document.getElementById("lobbySaveHint").textContent = T("lobbySaveHint");
+
+    document.getElementById("roomsTitle").textContent = T("roomsTitle");
+    document.getElementById("dmTitle").textContent = T("dmTitle");
+    document.getElementById("onlineTitle").textContent = T("onlineTitle");
+
+    document.getElementById("roomJoin").placeholder = T("roomJoinPh");
+    document.getElementById("btn").textContent = T("btnSend");
+  }
+
+  // ========= Elements =========
   const lobby = document.getElementById("lobby");
   const appEl = document.getElementById("app");
 
@@ -1700,10 +1947,12 @@ HTML = r"""<!doctype html>
 
   const nickSuggestBox = document.getElementById("nickSuggestBox");
   const nickSuggestVal = document.getElementById("nickSuggestVal");
-  const applySuggest   = document.getElementById("applySuggest");
+  const applySuggestBtn = document.getElementById("applySuggest");
 
   const themePick = document.getElementById("themePick");
   const themeTop  = document.getElementById("themeTop");
+  const langPick  = document.getElementById("langPick");
+  const langTop   = document.getElementById("langTop");
 
   const log = document.getElementById("log");
   const msgEl = document.getElementById("msg");
@@ -1733,19 +1982,18 @@ HTML = r"""<!doctype html>
   let myNick = "";
   let myColor = "#caffd9";
 
-  // Convos: key => {kind:'room'|'dm', room?, peer?, title, unread, items[], loaded}
+  // Convos
   const convs = new Map();
   let activeKey = "room:main";
 
-  // quick DOM indexing for edits/reactions
-  const msgDom = new Map(); // msgId -> element
+  const msgDom = new Map();
 
   // Typing
   let typing = false;
   let typingTimer = null;
   let lastTypingSend = 0;
 
-  // Utility
+  // ========= Utilities =========
   function esc(s){
     return (s ?? "").toString()
       .replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")
@@ -1753,8 +2001,13 @@ HTML = r"""<!doctype html>
   }
 
   function setConn(ok){
-    if(ok){ connDot.classList.add("ok"); connText.textContent = "Connected"; }
-    else { connDot.classList.remove("ok"); connText.textContent = "Disconnected"; }
+    if(ok){
+      connDot.classList.add("ok");
+      connText.textContent = T("connConnected");
+    }else{
+      connDot.classList.remove("ok");
+      connText.textContent = T("connDisconnected");
+    }
   }
 
   function setNickError(text){
@@ -1789,15 +2042,33 @@ HTML = r"""<!doctype html>
     return /^[A-Za-z0-9ĄČĘĖĮŠŲŪŽąčęėįšųūž_\-\. ]{2,24}$/.test(n);
   }
 
-  // THEME
   function setTheme(cls){
     document.body.className = cls;
     localStorage.setItem("theme", cls);
-    if(themePick) themePick.value = cls;
-    if(themeTop) themeTop.value = cls;
+    themePick.value = cls;
+    themeTop.value = cls;
   }
+
+  function setLang(lang){
+    UI_LANG = (lang || "lt").toLowerCase();
+    if(!I18N[UI_LANG]) UI_LANG = "lt";
+    localStorage.setItem("lang", UI_LANG);
+    langPick.value = UI_LANG;
+    langTop.value = UI_LANG;
+    applyLangToUI();
+    // if connected, tell server too (so sys messages match)
+    if(ws && ws.readyState === WebSocket.OPEN){
+      wsSend({type:"say", room:"main", text:`/lang ${UI_LANG}`});
+    }
+    // refresh placeholders for active convo
+    setHeader();
+    setConn(ws && ws.readyState === WebSocket.OPEN);
+  }
+
   themePick.addEventListener("change", () => setTheme(themePick.value));
   themeTop.addEventListener("change", () => setTheme(themeTop.value));
+  langPick.addEventListener("change", () => setLang(langPick.value));
+  langTop.addEventListener("change", () => setLang(langTop.value));
 
   function showLobby(show){
     lobby.style.display = show ? "flex" : "none";
@@ -1815,7 +2086,7 @@ HTML = r"""<!doctype html>
 
   function wsUrl(){
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    const qs = new URLSearchParams({ nick }).toString();
+    const qs = new URLSearchParams({ nick, lang: UI_LANG }).toString();
     return `${proto}://${location.host}/ws?${qs}`;
   }
 
@@ -1827,7 +2098,7 @@ HTML = r"""<!doctype html>
     return `${hh}:${mm}:${ss}`;
   }
 
-  // Conversations
+  // ========= Conversations =========
   function ensureRoomConvo(roomKey, title, topic){
     const key = `room:${roomKey}`;
     if(!convs.has(key)){
@@ -1848,30 +2119,19 @@ HTML = r"""<!doctype html>
     return key;
   }
 
-  function setActive(key){
-    if(!convs.has(key)) return;
-    activeKey = key;
-    const c = convs.get(key);
-    if(c) c.unread = 0;
-    renderSidebars();
-    renderActiveLog();
-    setHeader();
-  }
-
   function setHeader(){
     const c = convs.get(activeKey);
     if(!c) return;
     if(c.kind === "room"){
       topicEl.textContent = `#${c.room}`;
-      msgEl.placeholder = `rašyk į #${c.room} ir Enter... (komandos: /help)`;
+      msgEl.placeholder = T("msgPhRoom")(c.room);
     }else{
-      topicEl.textContent = `DM su ${c.peer}`;
-      msgEl.placeholder = `rašyk DM ${c.peer} ir Enter...`;
+      topicEl.textContent = `DM ${c.peer}`;
+      msgEl.placeholder = T("msgPhDM")(c.peer);
     }
   }
 
   function renderSidebars(){
-    // Rooms
     const rooms = Array.from(convs.values()).filter(x => x.kind === "room");
     rooms.sort((a,b) => a.title.localeCompare(b.title, "lt"));
     roomsEl.innerHTML = "";
@@ -1890,7 +2150,6 @@ HTML = r"""<!doctype html>
       roomsEl.appendChild(row);
     }
 
-    // DMs
     const dms = Array.from(convs.values()).filter(x => x.kind === "dm");
     dms.sort((a,b) => a.title.localeCompare(b.title, "lt"));
     dmsEl.innerHTML = "";
@@ -1901,13 +2160,12 @@ HTML = r"""<!doctype html>
       row.innerHTML = `
         <div>
           <div class="iname">${esc(c.title)}</div>
-          <div class="idesc">privatus pokalbis</div>
+          <div class="idesc">${UI_LANG==='en' ? 'private chat' : 'privatus pokalbis'}</div>
         </div>
         <div class="badge" style="${unread>0 ? 'display:inline-flex;' : ''}">${unread}</div>
       `;
       row.addEventListener("click", () => {
         setActive(c.key);
-        // lazy load dm history
         if(!c.loaded){
           c.loaded = true;
           wsSend({type:"dm_history_req", with:c.peer, limit:120});
@@ -1915,6 +2173,16 @@ HTML = r"""<!doctype html>
       });
       dmsEl.appendChild(row);
     }
+  }
+
+  function setActive(key){
+    if(!convs.has(key)) return;
+    activeKey = key;
+    const c = convs.get(key);
+    if(c) c.unread = 0;
+    renderSidebars();
+    renderActiveLog();
+    setHeader();
   }
 
   function clearLog(){
@@ -1945,8 +2213,6 @@ HTML = r"""<!doctype html>
     el.className = "line";
     const t = esc(o.t || "");
     const id = o.id != null ? Number(o.id) : null;
-
-    // message header id
     const idHtml = (id != null) ? `<span class="idTag">#${id}</span>` : `<span class="idTag"></span>`;
 
     if(o.type === "msg"){
@@ -1980,39 +2246,31 @@ HTML = r"""<!doctype html>
     if(id != null){
       el.dataset.id = String(id);
       msgDom.set(id, el);
-
-      // click reaction shortcut: Alt+Click message -> prompt emoji
       el.addEventListener("click", (ev) => {
         if(!ev.altKey) return;
-        const emoji = prompt("Reakcija (pvz 😀):");
+        const emoji = prompt(T("reactPrompt"));
         if(!emoji) return;
-        // only for room messages
         const c = convs.get(activeKey);
         if(c && c.kind === "room"){
-          wsSend({ text: `/react ${id} ${emoji}`, room: c.room });
+          wsSend({ type:"say", room: c.room, text: `/react ${id} ${emoji}` });
         }
       });
     }
-
     return el;
   }
 
   function pushToConvo(key, obj, noUnread=false){
     if(!convs.has(key)) return;
     const c = convs.get(key);
-
     c.items.push(obj);
     if(c.items.length > 600){
       c.items.splice(0, c.items.length - 600);
     }
-
     if(!noUnread && key !== activeKey){
       c.unread = (c.unread||0) + 1;
     }
-
     if(key === activeKey){
-      const el = renderMessageObj(obj);
-      addLineElement(el);
+      addLineElement(renderMessageObj(obj));
     }
   }
 
@@ -2025,16 +2283,29 @@ HTML = r"""<!doctype html>
     }
   }
 
+  // ========= Routing =========
   function routeIncoming(o){
-    // topic/rooms/users are special
+    if(o.type === "lang"){
+      // server acknowledged language
+      if(o.lang && (o.lang === "lt" || o.lang === "en")){
+        UI_LANG = o.lang;
+        localStorage.setItem("lang", UI_LANG);
+        langPick.value = UI_LANG;
+        langTop.value = UI_LANG;
+        applyLangToUI();
+        setHeader();
+        setConn(true);
+      }
+      return;
+    }
+
     if(o.type === "rooms"){
-      // ensure room convos exist
       for(const it of (o.items || [])){
         ensureRoomConvo(it.room, it.title, it.topic);
       }
       renderSidebars();
-      // keep active if missing
       if(!convs.has(activeKey)){
+        ensureRoomConvo("main", "#main", "");
         setActive("room:main");
       }
       return;
@@ -2042,16 +2313,12 @@ HTML = r"""<!doctype html>
 
     if(o.type === "topic"){
       const room = o.room || "main";
-      const key = ensureRoomConvo(room, `#${room}`, (o.text || "").split("—").slice(1).join("—").trim());
-      // store full for display
+      const key = ensureRoomConvo(room, `#${room}`, "");
       const c = convs.get(key);
       if(c){
-        // try parse "title — topic"
         c.topic = (o.text || "").split("—").slice(1).join("—").trim() || c.topic;
       }
-      if(activeKey === key){
-        setHeader();
-      }
+      if(activeKey === key) setHeader();
       renderSidebars();
       return;
     }
@@ -2067,7 +2334,7 @@ HTML = r"""<!doctype html>
         row.innerHTML = `
           <div>
             <div class="iname" style="color:${esc(u.color||'#caffd9')}">${esc(u.nick||'???')} ${st==='away' ? '(away)' : ''}</div>
-            <div class="idesc">spausk DM</div>
+            <div class="idesc">${UI_LANG==='en' ? 'click for DM' : 'spausk DM'}</div>
           </div>
           <div class="badge" style="display:none;"></div>
         `;
@@ -2092,9 +2359,9 @@ HTML = r"""<!doctype html>
       if(items.length === 0){
         typingText.textContent = "";
       } else if(items.length === 1){
-        typingText.textContent = `${items[0]} rašo...`;
+        typingText.textContent = T("typingOne")(items[0]);
       } else {
-        typingText.textContent = `${items.slice(0,2).join(", ")} ir dar ${items.length-2} rašo...`;
+        typingText.textContent = T("typingMany")(items[0], items[1], items.length-2);
       }
       return;
     }
@@ -2102,48 +2369,40 @@ HTML = r"""<!doctype html>
     if(o.type === "pins"){
       const room = o.room || "main";
       const ids = o.items || [];
-      const txt = ids.length ? `Pin’ai: ${ids.map(x => "#"+x).join(", ")}` : "Pin’ų nėra.";
+      const txt = ids.length ? `Pins: ${ids.map(x => "#"+x).join(", ")}` : (UI_LANG==='en' ? "No pins." : "Pin’ų nėra.");
       pushToConvo(`room:${room}`, {type:"sys", t: tsLocal(), text: txt}, true);
       return;
     }
 
     if(o.type === "quote"){
-      const room = o.room || "main";
       const id = o.id;
       const nick = o.nick || "sys";
       const text = o.text || "";
-      // insert quote into input
       msgEl.value = `> #${id} ${nick}: ${text}\n`;
       msgEl.focus();
       return;
     }
 
-    // edits
     if(o.type === "edit"){
       const room = o.room || "main";
       const id = Number(o.id);
-      const el = msgDom.get(id);
-      if(el){
-        // Update in conv cache too
-        const key = `room:${room}`;
-        const c = convs.get(key);
-        if(c){
-          const it = c.items.find(x => Number(x.id) === id);
-          if(it){
-            it.text = o.text;
-            it.extra = it.extra || {};
-            it.extra.edited = true;
-          }
+      const key = `room:${room}`;
+      const c = convs.get(key);
+      if(c){
+        const it = c.items.find(x => Number(x.id) === id);
+        if(it){
+          it.text = o.text;
+          it.extra = o.extra || it.extra || {};
+          it.extra.edited = true;
         }
-        // rerender by replacing innerHTML
-        const c2 = convs.get(`room:${room}`);
-        if(c2){
-          const it2 = c2.items.find(x => Number(x.id) === id);
-          if(it2){
-            const newEl = renderMessageObj(it2);
-            el.replaceWith(newEl);
-            msgDom.set(id, newEl);
-          }
+      }
+      const el = msgDom.get(id);
+      if(el && c){
+        const it2 = c.items.find(x => Number(x.id) === id);
+        if(it2){
+          const newEl = renderMessageObj(it2);
+          el.replaceWith(newEl);
+          msgDom.set(id, newEl);
         }
       }
       return;
@@ -2163,8 +2422,8 @@ HTML = r"""<!doctype html>
         }
       }
       const el = msgDom.get(id);
-      if(el){
-        const it2 = c ? c.items.find(x => Number(x.id) === id) : null;
+      if(el && c){
+        const it2 = c.items.find(x => Number(x.id) === id);
         if(it2){
           const newEl = renderMessageObj(it2);
           el.replaceWith(newEl);
@@ -2187,8 +2446,8 @@ HTML = r"""<!doctype html>
         }
       }
       const el = msgDom.get(id);
-      if(el){
-        const it2 = c ? c.items.find(x => Number(x.id) === id) : null;
+      if(el && c){
+        const it2 = c.items.find(x => Number(x.id) === id);
         if(it2){
           const newEl = renderMessageObj(it2);
           el.replaceWith(newEl);
@@ -2198,15 +2457,13 @@ HTML = r"""<!doctype html>
       return;
     }
 
-    // history
     if(o.type === "history"){
       const room = o.room || "main";
       const key = ensureRoomConvo(room, `#${room}`, "");
       const c = convs.get(key);
       c.items = [];
       for(const it of (o.items || [])){
-        // normalize
-        const item = {
+        c.items.push({
           id: it.id,
           type: it.type,
           t: it.t,
@@ -2214,12 +2471,9 @@ HTML = r"""<!doctype html>
           color: it.color,
           text: it.text,
           extra: it.extra || {}
-        };
-        c.items.push(item);
+        });
       }
-      if(activeKey === key){
-        renderActiveLog();
-      }
+      if(activeKey === key) renderActiveLog();
       renderSidebars();
       return;
     }
@@ -2241,44 +2495,26 @@ HTML = r"""<!doctype html>
           extra: it.extra || {}
         });
       }
-      if(activeKey === key){
-        renderActiveLog();
-      }
+      if(activeKey === key) renderActiveLog();
       renderSidebars();
       return;
     }
 
-    // DM
     if(o.type === "dm"){
       const peer = (myNick && (o.from||"").toLowerCase() === myNick.toLowerCase()) ? (o.to||"") : (o.from||"");
       const key = ensureDmConvo(peer);
       renderSidebars();
       pushToConvo(key, {
-        id:o.id,
-        type:"dm",
-        t:o.t,
-        from:o.from,
-        to:o.to,
-        color:o.color,
-        text:o.text,
-        extra:o.extra || {}
+        id:o.id, type:"dm", t:o.t, from:o.from, to:o.to, color:o.color, text:o.text, extra:o.extra||{}
       }, false);
       return;
     }
 
-    // Room messages
     const room = o.room || "main";
     const key = ensureRoomConvo(room, `#${room}`, "");
-    const obj = {
-      id: o.id,
-      type: o.type,
-      t: o.t || tsLocal(),
-      nick: o.nick,
-      color: o.color,
-      text: o.text,
-      extra: o.extra || {}
-    };
-    pushToConvo(key, obj, false);
+    pushToConvo(key, {
+      id:o.id, type:o.type, t:o.t||tsLocal(), nick:o.nick, color:o.color, text:o.text, extra:o.extra||{}
+    }, false);
     renderSidebars();
   }
 
@@ -2287,13 +2523,12 @@ HTML = r"""<!doctype html>
     ws.send(JSON.stringify(obj));
   }
 
+  // ========= WS connect =========
   function connect(){
     joinEstablished = false;
     fatalJoinError = false;
-
     setConn(false);
 
-    // init default convs
     convs.clear();
     ensureRoomConvo("main", "#main", "Bendras kanalas");
     activeKey = "room:main";
@@ -2301,18 +2536,25 @@ HTML = r"""<!doctype html>
     setHeader();
     renderActiveLog();
 
-    pushToConvo("room:main", {type:"sys", t: tsLocal(), text:"jungiamasi..."}, true);
+    pushToConvo("room:main", {type:"sys", t: tsLocal(), text: UI_LANG==='en' ? "connecting..." : "jungiamasi..."}, true);
 
     ws = new WebSocket(wsUrl());
 
     ws.onopen = () => {
       setConn(true);
       stopReconnect();
+      // apply language server-side too
+      wsSend({type:"say", room:"main", text:`/lang ${UI_LANG}`});
     };
 
     ws.onmessage = (ev) => {
       let o = null;
       try { o = JSON.parse(ev.data); } catch { return; }
+
+      if (o.type === "ping") {
+      wsSend({ type: "pong", t: Date.now() });
+      return;
+    }
 
       if(o.type === "error"){
         fatalJoinError = true;
@@ -2320,7 +2562,7 @@ HTML = r"""<!doctype html>
         try{ ws.close(); }catch{}
         showLobby(true);
         setNickState("");
-        setNickError(o.text || "Prisijungti nepavyko.");
+        setNickError(o.text || (UI_LANG==='en' ? "Join failed." : "Prisijungti nepavyko."));
         joinBtn.disabled = true;
         scheduleNickCheck();
         return;
@@ -2331,14 +2573,11 @@ HTML = r"""<!doctype html>
         myNick = o.nick || "";
         myColor = o.color || "#caffd9";
         meNickPill.innerHTML = `<b style="color:${esc(myColor)}">${esc(myNick)}</b>`;
-        // ensure main active
         setActive("room:main");
         return;
       }
 
-      // first server packets mark established
       if(["rooms","topic","history","users"].includes(o.type)) joinEstablished = true;
-
       routeIncoming(o);
     };
 
@@ -2348,14 +2587,16 @@ HTML = r"""<!doctype html>
         stopReconnect();
         showLobby(true);
         if(!fatalJoinError){
-          setNickError("Prisijungti nepavyko. Patikrink ar nick laisvas ir bandyk dar kartą.");
+          setNickError(UI_LANG==='en'
+            ? "Could not connect. Check nickname and try again."
+            : "Prisijungti nepavyko. Patikrink nick ir bandyk dar kartą.");
           scheduleNickCheck();
         }
         return;
       }
       if(fatalJoinError) return;
 
-      pushToConvo("room:main", {type:"sys", t: tsLocal(), text:"ryšys nutrūko, reconnect..."}, false);
+      pushToConvo("room:main", {type:"sys", t: tsLocal(), text: UI_LANG==='en' ? "connection lost, reconnect..." : "ryšys nutrūko, reconnect..."}, false);
       if(!reconnectTimer) reconnectTimer = setInterval(connect, 1500);
     };
   }
@@ -2399,41 +2640,34 @@ HTML = r"""<!doctype html>
     if(!c) return;
 
     if(!ws || ws.readyState !== WebSocket.OPEN){
-      pushToConvo(activeKey, {type:"sys", t: tsLocal(), text:"nėra ryšio su serveriu."}, false);
+      pushToConvo(activeKey, {type:"sys", t: tsLocal(), text: T("noConn")}, false);
       return;
     }
 
-    // stop typing broadcast
     typing = false;
     setTyping(false);
 
-    // commands: always send with active room context
     if(text.startsWith("/")){
       if(c.kind === "room"){
         wsSend({type:"say", room:c.room, text});
       }else{
-        // command in DM tab executes in #main context (reasonable default)
         wsSend({type:"say", room:"main", text});
       }
       msgEl.value = "";
       return;
     }
 
-    // normal message
     if(c.kind === "room"){
       wsSend({type:"say", room:c.room, text});
     }else{
-      // DM tab: convert to /dm
       wsSend({type:"say", room:"main", text:`/dm ${c.peer} ${text}`});
     }
-
     msgEl.value = "";
   }
 
   btn.onclick = send;
   msgEl.addEventListener("keydown", (e) => { if(e.key === "Enter") send(); });
 
-  // join room input
   roomJoinEl.addEventListener("keydown", (e) => {
     if(e.key !== "Enter") return;
     const val = (roomJoinEl.value || "").trim();
@@ -2464,27 +2698,27 @@ HTML = r"""<!doctype html>
 
     if(!validateNick(n)){
       setNickState("");
-      setNickError("Netinkamas nick. Reikia 2–24 simbolių (raidės/skaičiai/tarpas/_-.)");
+      setNickError(T("nickInvalid"));
       return;
     }
 
     setNickError("");
-    setNickState("Tikrinama ar nick laisvas...");
+    setNickState(T("nickChecking"));
 
     try{
-      const qs = new URLSearchParams({ nick: n }).toString();
+      const qs = new URLSearchParams({ nick: n, lang: UI_LANG }).toString();
       const r = await fetch(`/check_nick?${qs}`, { cache: "no-store" });
       const j = await r.json();
 
       if(j && j.ok){
         nickAvailable = true;
-        setNickState("Nick laisvas. Galite prisijungti.");
+        setNickState(T("nickFree"));
         setNickError("");
         joinBtn.disabled = false;
       }else{
         nickAvailable = false;
         setNickState("");
-        setNickError((j && j.reason) ? j.reason : "Nick užimtas arba neteisingas.");
+        setNickError((j && j.reason) ? j.reason : T("nickTaken"));
         joinBtn.disabled = true;
 
         const sug = await suggestNick(n);
@@ -2495,7 +2729,7 @@ HTML = r"""<!doctype html>
     }catch{
       nickAvailable = false;
       setNickState("");
-      setNickError("Nepavyko patikrinti nick (serveris nepasiekiamas).");
+      setNickError(T("CHECK_FAIL"));
       joinBtn.disabled = true;
     }
   }
@@ -2510,7 +2744,7 @@ HTML = r"""<!doctype html>
     if(e.key === "Enter" && !joinBtn.disabled) joinBtn.click();
   });
 
-  applySuggest.addEventListener("click", () => {
+  applySuggestBtn.addEventListener("click", () => {
     const s = (nickSuggestVal.textContent || "").trim();
     if(!s) return;
     nickPick.value = s;
@@ -2532,12 +2766,19 @@ HTML = r"""<!doctype html>
 
   // Init
   (function init(){
-    const savedNick = (localStorage.getItem("nick") || "").trim();
-    if(savedNick) nickPick.value = savedNick;
-
     const savedTheme = (localStorage.getItem("theme") || "theme-cyber").trim();
     setTheme(savedTheme);
 
+    const savedNick = (localStorage.getItem("nick") || "").trim();
+    if(savedNick) nickPick.value = savedNick;
+
+    const savedLang = (localStorage.getItem("lang") || "lt").trim().toLowerCase();
+    if(I18N[savedLang]) UI_LANG = savedLang;
+
+    langPick.value = UI_LANG;
+    langTop.value = UI_LANG;
+
+    applyLangToUI();
     scheduleNickCheck();
     showLobby(true);
   })();
@@ -2546,54 +2787,75 @@ HTML = r"""<!doctype html>
 </html>
 """
 
+
+# =====================================
+# WEBSOCKET ENDPOINT
+# =====================================
+
+async def heartbeat_sender(ws: WebSocket):
+    """
+    Periodiškai siunčia ping, kad proxy/naršyklė nenutrauktų WS ryšio dėl 'idle timeout'.
+    """
+    try:
+        while True:
+            await asyncio.sleep(25)  # kas 25 s
+            await ws.send_json({"type": "ping", "t": ts()})
+    except Exception:
+        pass
+
+
 # =====================================
 # WEBSOCKET ENDPOINT
 # =====================================
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     nick = (ws.query_params.get("nick") or "").strip()
+    lang = (ws.query_params.get("lang") or "lt").strip().lower()
+    if lang not in LANGS:
+        lang = "lt"
 
     await ws.accept()
 
     if not valid_nick(nick):
-        await ws.send_json({"type": "error", "code": "BAD_NICK", "text": "Netinkamas nick. Grįžk ir įvesk teisingą."})
+        await ws.send_json({"type": "error", "code": "BAD_NICK", "text": t(lang, "BAD_NICK")})
         await ws.close()
         return
 
     async with state_lock:
         if nick.casefold() in all_ws_by_nick_cf:
-            await ws.send_json({"type": "error", "code": "NICK_TAKEN", "text": "Nick užimtas. Pasirink kitą."})
+            await ws.send_json({"type": "error", "code": "NICK_TAKEN", "text": t(lang, "NICK_TAKEN")})
             await ws.close()
             return
 
-        # allocate color across all online users (global distinctness)
         used = {u.color for u in all_users_by_ws.values()}
         color = alloc_color(used)
 
-        u = User(nick=nick, color=color)
+        u = User(nick=nick, color=color, lang=lang)
         all_users_by_ws[ws] = u
         all_ws_by_nick_cf[nick.casefold()] = ws
 
-    # ensure default rooms exist
     for rk in DEFAULT_ROOMS.keys():
         ensure_room(rk)
 
-    # auto join #main
     await join_room(ws, "#main")
-
-    # send full rooms list
     await broadcast_rooms_list(ws)
-
-    # initial topic + users list for #main
     await ws_send(ws, {"type": "topic", "room": "main", "text": f"{ensure_room('main').title} — {ensure_room('main').topic}"})
     await ws_send(ws, {"type": "users", "room": "main", "items": room_userlist("main")})
-
-    # identify
     await ws_send(ws, {"type": "me", "nick": u.nick, "color": u.color})
+    await ws_send(ws, {"type": "lang", "lang": u.lang})
+
+    # --- KEEPALIVE START ---
+    hb_task = asyncio.create_task(heartbeat_sender(ws))
+    # --- KEEPALIVE END ---
 
     try:
         while True:
             data = await ws.receive_json()
+
+            # --- KEEPALIVE: client pong ---
+            if isinstance(data, dict) and data.get("type") == "pong":
+                continue
+
             if not isinstance(data, dict):
                 continue
 
@@ -2621,38 +2883,26 @@ async def ws_endpoint(ws: WebSocket):
                 await ws_send(ws, {"type": "dm_history", "with": peer, "items": items})
                 continue
 
-            # main say payload
             if data.get("type") == "say":
                 room_key = norm_room(data.get("room", "main"))
                 text = str(data.get("text", "")).strip()
                 if not text:
                     continue
 
-                # must be member to talk
-                async with state_lock:
-                    if room_key not in u.rooms:
-                        # auto-join if room exists and user tries to speak
-                        # (optional), but keep it friendly:
-                        pass
-
-                # rate limiting
-                ok, reason = check_rate_limit(u, len(text))
+                ok, code = check_rate_limit(u, len(text))
                 if not ok:
-                    await ws_send(ws, {"type": "sys", "t": ts(), "text": reason})
+                    await ws_send(
+                        ws,
+                        {"type": "sys", "t": ts(), "text": t(u.lang, "RATE_LIMIT" if code == "rate" else "RATE_LIMIT_CHARS")},
+                    )
                     continue
 
-                # commands
                 if text.startswith("/"):
                     handled = await handle_command(ws, room_key, text)
                     if handled:
                         continue
 
-                # normal message
-                extra = {
-                    "created_at": time.time(),
-                    "edited": False,
-                    "reactions": {},
-                }
+                extra = {"created_at": time.time(), "edited": False, "reactions": {}}
                 msg = {
                     "scope": "room",
                     "room": room_key,
@@ -2680,4 +2930,9 @@ async def ws_endpoint(ws: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
+        # --- KEEPALIVE CLEANUP ---
+        try:
+            hb_task.cancel()
+        except Exception:
+            pass
         await disconnect_ws(ws)

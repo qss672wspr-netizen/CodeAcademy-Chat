@@ -4,6 +4,7 @@ import os
 import random
 import re
 import time
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, Optional, Set
@@ -14,6 +15,12 @@ from openai import OpenAI
 from zoneinfo import ZoneInfo
 
 app = FastAPI()
+
+# =========================
+# LOGGING
+# =========================
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logger = logging.getLogger("hestio")
 
 # =========================
 # CONFIG
@@ -125,8 +132,16 @@ async def ai_generate(prompt: str, lang: str) -> str:
     try:
         out = await asyncio.to_thread(_call)
     except Exception as e:
-        # Keep error message user-friendly and non-sensitive
-        return ("AI klaida. Pabandyk vėliau." if lang != "en" else "AI error. Try again later.")
+        # Log full error to Render logs for debugging (safe: does not print API key)
+        try:
+            logger.exception("OpenAI call failed")
+        except Exception:
+            pass
+        # Return a friendly message in chat
+        return (
+            "AI klaida (patikrink Render logs, OPENAI_API_KEY ir billing)." if lang != "en" else
+            "AI error (check Render logs, OPENAI_API_KEY and billing)."
+        )
     return (out or "").strip()
 # =========================
 # MODELS / STATE
@@ -417,7 +432,16 @@ async def ws_endpoint(ws: WebSocket):
 
 
                     # Admin-only: call the AI host bot
-                    if low.startswith("/ai "):
+                                        if low == "/ai status":
+                        if not u.is_admin:
+                            await ws_send(ws, {"type": "sys", "room": room_key, "t": ts(), "text": ("Tik admin gali naudoti /ai." if u.lang != "en" else "Only admin can use /ai.")})
+                            continue
+                        key_present = bool(os.environ.get("OPENAI_API_KEY","").strip())
+                        key_len = len(os.environ.get("OPENAI_API_KEY","").strip()) if key_present else 0
+                        await ws_send(ws, {"type": "sys", "room": room_key, "t": ts(), "text": (f"AI status: enabled={AI_ENABLED}, key_present={key_present}, key_len={key_len}, model={OPENAI_MODEL}, max_out={OPENAI_MAX_OUTPUT_TOKENS}" if u.lang == "en" else f"AI būsena: enabled={AI_ENABLED}, key_yra={key_present}, key_ilgis={key_len}, modelis={OPENAI_MODEL}, max_out={OPENAI_MAX_OUTPUT_TOKENS}")})
+                        continue
+
+if low.startswith("/ai "):
                         if not u.is_admin:
                             await ws_send(ws, {"type": "sys", "room": room_key, "t": ts(), "text": "Tik admin gali naudoti /ai." if u.lang != "en" else "Only admin can use /ai."})
                             continue

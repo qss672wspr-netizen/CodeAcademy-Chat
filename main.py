@@ -2011,6 +2011,9 @@ HTML = r"""<!doctype html>
   // WS
   let ws = null;
   let reconnectTimer = null;
+  let connectingNow = false;
+  let reconnectDelay = 1200;
+  const reconnectDelayMax = 8000;
   let joinEstablished = false;
   let fatalJoinError = false;
 
@@ -2149,9 +2152,19 @@ HTML = r"""<!doctype html>
 
   function stopReconnect(){
     if(reconnectTimer){
-      clearInterval(reconnectTimer);
+      clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
+    reconnectDelay = 1200;
+  }
+
+  function scheduleReconnect(){
+    if(reconnectTimer) return;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connect(true);
+      reconnectDelay = Math.min(reconnectDelayMax, Math.floor(reconnectDelay * 1.4));
+    }, reconnectDelay);
   }
 
   function wsUrl(){
@@ -2560,23 +2573,31 @@ HTML = r"""<!doctype html>
   }
 
   // ========= WS connect =========
-  function connect(){
+  function connect(isReconnect=false){
+    if(connectingNow) return;
+    connectingNow = true;
     joinEstablished = false;
     fatalJoinError = false;
     setConn(false);
+    if(!isReconnect){
+      convs.clear();
+      ensureRoomConvo("main", "#main", "Bendras kanalas");
+      activeKey = "room:main";
+      renderSidebars();
+      setHeader();
+      renderActiveLog();
 
-    convs.clear();
-    ensureRoomConvo("main", "#main", "Bendras kanalas");
-    activeKey = "room:main";
-    renderSidebars();
-    setHeader();
-    renderActiveLog();
+      pushToConvo("room:main", {type:"sys", t: tsLocalFallback(), text: UI_LANG==='en' ? "connecting..." : "jungiamasi..."}, true);
+    } else {
+      // Reconnect: keep existing UI state and history
+      pushToConvo(activeKey, {type:"sys", t: tsLocalFallback(), text: UI_LANG==='en' ? "reconnecting..." : "reconnect..."}, true);
+    }
 
-    pushToConvo("room:main", {type:"sys", t: tsLocalFallback(), text: UI_LANG==='en' ? "connecting..." : "jungiamasi..."}, true);
 
     ws = new WebSocket(wsUrl());
 
     ws.onopen = () => {
+      connectingNow = false;
       setConn(true);
       stopReconnect();
       // ensure server language is set early
@@ -2613,6 +2634,7 @@ HTML = r"""<!doctype html>
     };
 
     ws.onclose = () => {
+      connectingNow = false;
       setConn(false);
       if(!joinEstablished){
         stopReconnect();
@@ -2628,8 +2650,7 @@ HTML = r"""<!doctype html>
       if(fatalJoinError) return;
 
       pushToConvo("room:main", {type:"sys", t: tsLocalFallback(), text: UI_LANG==='en' ? "connection lost, reconnect..." : "ryšys nutrūko, reconnect..."}, false);
-      if(!reconnectTimer) reconnectTimer = setInterval(connect, 1500);
-    };
+      scheduleReconnect();};
   }
 
   // Typing

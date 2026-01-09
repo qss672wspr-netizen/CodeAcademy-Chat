@@ -819,7 +819,7 @@ HTML = r"""<!doctype html>
     .wm{
       position:fixed; inset:0; pointer-events:none; z-index:0;
       display:flex; align-items:center; justify-content:center;
-      opacity:.08;
+      opacity:.16;
     }
     .wm img{ width:min(760px, 78vw); height:auto; }
     .wrap{ position:relative; z-index:1; height:100%; display:grid; grid-template-rows:auto 1fr auto; gap:12px; padding:14px; box-sizing:border-box; }

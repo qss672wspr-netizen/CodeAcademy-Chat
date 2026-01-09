@@ -2551,11 +2551,6 @@ HTML = r"""<!doctype html>
       let o = null;
       try { o = JSON.parse(ev.data); } catch { return; }
 
-      if (o.type === "ping") {
-      wsSend({ type: "pong", t: Date.now() });
-      return;
-    }
-
       if(o.type === "error"){
         fatalJoinError = true;
         stopReconnect();
@@ -2791,22 +2786,6 @@ HTML = r"""<!doctype html>
 # =====================================
 # WEBSOCKET ENDPOINT
 # =====================================
-
-async def heartbeat_sender(ws: WebSocket):
-    """
-    Periodiškai siunčia ping, kad proxy/naršyklė nenutrauktų WS ryšio dėl 'idle timeout'.
-    """
-    try:
-        while True:
-            await asyncio.sleep(25)  # kas 25 s
-            await ws.send_json({"type": "ping", "t": ts()})
-    except Exception:
-        pass
-
-
-# =====================================
-# WEBSOCKET ENDPOINT
-# =====================================
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     nick = (ws.query_params.get("nick") or "").strip()
@@ -2844,18 +2823,9 @@ async def ws_endpoint(ws: WebSocket):
     await ws_send(ws, {"type": "me", "nick": u.nick, "color": u.color})
     await ws_send(ws, {"type": "lang", "lang": u.lang})
 
-    # --- KEEPALIVE START ---
-    hb_task = asyncio.create_task(heartbeat_sender(ws))
-    # --- KEEPALIVE END ---
-
     try:
         while True:
             data = await ws.receive_json()
-
-            # --- KEEPALIVE: client pong ---
-            if isinstance(data, dict) and data.get("type") == "pong":
-                continue
-
             if not isinstance(data, dict):
                 continue
 
@@ -2891,10 +2861,7 @@ async def ws_endpoint(ws: WebSocket):
 
                 ok, code = check_rate_limit(u, len(text))
                 if not ok:
-                    await ws_send(
-                        ws,
-                        {"type": "sys", "t": ts(), "text": t(u.lang, "RATE_LIMIT" if code == "rate" else "RATE_LIMIT_CHARS")},
-                    )
+                    await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "RATE_LIMIT" if code == "rate" else "RATE_LIMIT_CHARS")})
                     continue
 
                 if text.startswith("/"):
@@ -2914,25 +2881,11 @@ async def ws_endpoint(ws: WebSocket):
                     "extra": extra,
                 }
                 msg_id = await db_insert_message(msg)
-                payload = {
-                    "type": "msg",
-                    "room": room_key,
-                    "id": msg_id,
-                    "t": msg["ts"],
-                    "nick": u.nick,
-                    "color": u.color,
-                    "text": msg["text"],
-                    "extra": extra,
-                }
+                payload = {"type": "msg", "room": room_key, "id": msg_id, "t": msg["ts"], "nick": u.nick, "color": u.color, "text": msg["text"], "extra": extra}
                 await room_broadcast(room_key, payload)
                 continue
 
     except WebSocketDisconnect:
         pass
     finally:
-        # --- KEEPALIVE CLEANUP ---
-        try:
-            hb_task.cancel()
-        except Exception:
-            pass
         await disconnect_ws(ws)

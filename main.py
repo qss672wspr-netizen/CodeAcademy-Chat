@@ -5,6 +5,8 @@ import random
 import re
 import sqlite3
 import time
+import os
+import secrets
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -41,6 +43,21 @@ EDIT_WINDOW_SEC = 5 * 60
 
 MAX_MSG_PER_10S = 22
 MAX_CHARS_PER_10S = 2600
+
+# ----------------- Admin (optional) -----------------
+# Jei norite, kad nick 'admin' reikalautų slaptažodžio:
+# Render -> Environment -> pridėkite ADMIN_PASSWORD (pvz. labai stiprų).
+ADMIN_NICKS = {"admin"}  # case-insensitive palyginimas
+ADMIN_PASSWORD = (os.environ.get("ADMIN_PASSWORD") or "").strip()
+
+def is_admin_nick(nick: str) -> bool:
+    return (nick or "").casefold() in {x.casefold() for x in ADMIN_NICKS}
+
+def admin_pw_ok(pw: str) -> bool:
+    if not ADMIN_PASSWORD:
+        # jei ENV nepaduotas – slaptažodžio tikrinimas išjungtas (kad neužsirakintumėte)
+        return True
+    return secrets.compare_digest((pw or ""), ADMIN_PASSWORD)
 
 # ----------------- Validation -----------------
 NICK_RE = re.compile(r"^[A-Za-z0-9ĄČĘĖĮŠŲŪŽąčęėįšųūž_\-\. ]{2,24}$")
@@ -216,6 +233,9 @@ class Room:
     key: str
     title: str
     topic: str
+    created_at: float = field(default_factory=time.time)
+    last_ts: float = 0.0
+    last_preview: str = ""
     clients: Set[WebSocket] = field(default_factory=set)
     users: Dict[WebSocket, User] = field(default_factory=dict)
 
@@ -238,8 +258,12 @@ def ensure_room(room_key: str) -> Room:
     meta = DEFAULT_ROOMS.get(key)
     title = meta["title"] if meta else f"#{key}"
     topic = meta["topic"] if meta else "Naujas kanalas"
-    r = Room(key=key, title=title, topic=topic)
+    r = Room(key=key, title=title, topic=topic, last_ts=time.time())
     rooms[key] = r
+    try:
+        mark_rooms_dirty()
+    except Exception:
+        pass
     return r
 
 async def ws_send(ws: WebSocket, obj: dict) -> None:
@@ -271,15 +295,27 @@ def room_userlist(room_key: str) -> list[dict]:
 async def broadcast_userlist(room_key: str) -> None:
     await room_broadcast(room_key, {"type": "users", "room": room_key, "t": ts(), "items": room_userlist(room_key)})
 
+
 async def send_rooms_list(ws: WebSocket) -> None:
     u = all_users_by_ws.get(ws)
     if not u:
         return
-    keys = sorted(set(u.rooms) | set(DEFAULT_ROOMS.keys()))
-    items = []
-    for k in keys:
-        r = ensure_room(k)
-        items.append({"room": r.key, "title": r.title, "topic": r.topic, "count": len(r.users)})
+    async with state_lock:
+        keys = sorted(set(rooms.keys()) | set(DEFAULT_ROOMS.keys()))
+        items = []
+        for k in keys:
+            r = ensure_room(k)
+            items.append(
+                {
+                    "room": r.key,
+                    "title": r.title,
+                    "topic": r.topic,
+                    "count": len(r.users),
+                    "joined": (r.key in u.rooms),
+                    "last_ts": r.last_ts,
+                    "last_preview": r.last_preview,
+                }
+            )
     await ws_send(ws, {"type": "rooms", "t": ts(), "items": items})
 
 async def broadcast_rooms_list_all() -> None:
@@ -288,6 +324,28 @@ async def broadcast_rooms_list_all() -> None:
         sockets = list(all_users_by_ws.keys())
     for w in sockets:
         await send_rooms_list(w)
+
+
+# ----------------- Rooms list live updates (debounced) -----------------
+_rooms_dirty_task: Optional[asyncio.Task] = None
+
+async def _rooms_dirty_worker():
+    await asyncio.sleep(0.35)
+    await broadcast_rooms_list_all()
+
+def mark_rooms_dirty() -> None:
+    global _rooms_dirty_task
+    if _rooms_dirty_task and not _rooms_dirty_task.done():
+        return
+    _rooms_dirty_task = asyncio.create_task(_rooms_dirty_worker())
+
+def update_room_activity(room_key: str, preview: str = "") -> None:
+    key = norm_room(room_key) or "main"
+    r = ensure_room(key)
+    r.last_ts = time.time()
+    if preview:
+        r.last_preview = (preview or "").strip().replace("\n", " ")[:80]
+    mark_rooms_dirty()
 
 async def join_room(ws: WebSocket, room_key: str) -> Tuple[bool, str]:
     u = all_users_by_ws.get(ws)
@@ -444,6 +502,7 @@ async def cmd_topic(ws: WebSocket, room_key: str, arg: Optional[str]) -> None:
         return
     r.topic = new_topic
     msg_id = await db_insert_message(room_key, "sys", ts(), None, None, f"Tema pakeista: {new_topic}", {"kind": "topic"})
+    update_room_activity(room_key, f"[topic] {new_topic}")
     await room_broadcast(room_key, {"type": "topic", "room": room_key, "t": ts(), "text": f"{r.title} — {r.topic}"})
     await room_broadcast(room_key, {"type": "sys", "room": room_key, "t": ts(), "id": msg_id, "text": f"Tema pakeista: {new_topic}"})
     for w in list(r.clients):
@@ -687,20 +746,30 @@ async def home():
 async def health():
     return f"OK {ts()}"
 
+
 @app.get("/check_nick")
-async def check_nick(nick: str = ""):
+async def check_nick(nick: str = "", pw: str = ""):
     n = (nick or "").strip()
     if not valid_nick(n):
-        return JSONResponse({"ok": False, "code": "BAD_NICK", "reason": "Netinkamas nick (2–24)."})
+        return JSONResponse({"ok": False, "code": "BAD_NICK", "reason": "Netinkamas nick.", "needs_pw": is_admin_nick(n)})
+
+    # admin password gate (tik jei ADMIN_PASSWORD sukonfigūruotas)
+    if is_admin_nick(n) and ADMIN_PASSWORD:
+        if not (pw or "").strip():
+            return JSONResponse({"ok": False, "code": "PW_REQUIRED", "reason": "Admin nick reikalauja slaptažodžio.", "needs_pw": True})
+        if not admin_pw_ok((pw or "").strip()):
+            return JSONResponse({"ok": False, "code": "BAD_PASSWORD", "reason": "Neteisingas slaptažodis.", "needs_pw": True})
+
     async with state_lock:
         if n.casefold() in all_ws_by_nick_cf:
-            return JSONResponse({"ok": False, "code": "NICK_TAKEN", "reason": "Nick užimtas."})
-    return JSONResponse({"ok": True})
+            return JSONResponse({"ok": False, "code": "NICK_TAKEN", "reason": "Nick užimtas.", "needs_pw": is_admin_nick(n)})
+    return JSONResponse({"ok": True, "needs_pw": is_admin_nick(n)})
 
 # ----------------- WebSocket endpoint -----------------
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     nick = (ws.query_params.get("nick") or "").strip()
+    pw = (ws.query_params.get("pw") or "").strip()
 
     await ws.accept()
     peer = f"{ws.client.host if ws.client else 'unknown'}"
@@ -788,6 +857,7 @@ async def ws_endpoint(ws: WebSocket):
 
                 extra = {"created_at": time.time(), "edited": False, "reactions": {}}
                 msg_id = await db_insert_message(room_key, "msg", ts(), u.nick, u.color, text[:300], extra)
+                update_room_activity(room_key, text)
 
                 payload = {"type": "msg", "room": room_key, "id": msg_id, "t": ts(), "nick": u.nick, "color": u.color, "text": text[:300], "extra": extra}
                 await room_broadcast(room_key, payload)
@@ -877,6 +947,27 @@ HTML = r"""<!doctype html>
       opacity:.85;
     }
 
+.lastpill{
+  min-width:46px;
+  padding:2px 8px;
+  border-radius:999px;
+  font-size:12px;
+  font-weight:900;
+  color:var(--text);
+  border:1px solid rgba(255,255,255,.10);
+  background:rgba(0,0,0,.12);
+  text-align:center;
+  opacity:.85;
+}
+.item.notjoined{ opacity:.72; }
+.joinDot{
+  width:10px; height:10px; border-radius:999px;
+  background: var(--accent2);
+  box-shadow:0 0 10px rgba(107,228,255,.18);
+  opacity:0;
+}
+.item.joined .joinDot{ opacity:1; }
+
     #log{ padding:12px 14px; overflow:auto; min-height:0; white-space:pre-wrap; line-height:1.45; }
     .line{ margin:2px 0; }
     .t{ color: rgba(124,255,107,.40); }
@@ -950,7 +1041,13 @@ HTML = r"""<!doctype html>
           <div style="padding:12px;">
             <input id="nick" placeholder="pvz. Tomas" maxlength="24"/>
             <div id="nickState" class="small" style="margin-top:10px;"></div>
-            <div id="nickErr" class="err"></div>
+            
+<div class="label" style="margin-top:12px; display:none;" id="lblPw">Slaptažodis (tik admin)</div>
+<div class="nickrow" style="display:none;" id="pwRow">
+  <input id="pwPick" type="password" placeholder="slaptažodis" maxlength="64"/>
+</div>
+
+<div id="nickErr" class="err"></div>
           </div>
         </div>
         <div class="panel" style="border-radius:16px;">
@@ -1043,10 +1140,24 @@ HTML = r"""<!doctype html>
 
   const msgDom = new Map(); // id -> element (for updates)
 
+  function isAdminNick(n){ return (n||"").trim().toLowerCase() === "admin"; }
+
   function validateNick(n){
     return /^[A-Za-z0-9ĄČĘĖĮŠŲŪŽąčęėįšųūž_\\-\\. ]{2,24}$/.test((n||"").trim());
   }
-  function esc(s){
+  
+function timeAgo(ts){
+  ts = Number(ts||0);
+  if(!ts) return "";
+  const now = Date.now()/1000;
+  const d = Math.max(0, now - ts);
+  if(d < 60) return `${Math.floor(d)}s`;
+  if(d < 3600) return `${Math.floor(d/60)}m`;
+  if(d < 86400) return `${Math.floor(d/3600)}h`;
+  return `${Math.floor(d/86400)}d`;
+}
+
+function esc(s){
     return (s ?? "").toString()
       .replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")
       .replaceAll('"',"&quot;").replaceAll("'","&#39;");
@@ -1095,7 +1206,7 @@ HTML = r"""<!doctype html>
     </div>`;
   }
 
-  function ensureRoom(room, title, topic, count){
+  function ensureRoom(room, title, topic, count, joined, last_ts, last_preview){
     if(!roomState.has(room)){
       roomState.set(room, {room, title:title||("#"+room), topic:topic||"", count: (count??0), unread:0, items:[]});
     }else{
@@ -1103,6 +1214,9 @@ HTML = r"""<!doctype html>
       if(title) r.title = title;
       if(topic!==undefined) r.topic = topic;
       if(count!==undefined) r.count = count;
+      if(joined!==undefined) r.joined = joined;
+      if(last_ts!==undefined) r.last_ts = last_ts;
+      if(last_preview!==undefined) r.last_preview = last_preview;
     }
     return roomState.get(room);
   }
@@ -1113,7 +1227,7 @@ HTML = r"""<!doctype html>
     roomsEl.innerHTML = "";
     for(const r of rooms){
       const row = document.createElement("div");
-      row.className = "item" + (r.room === activeRoom ? " active" : "");
+      row.className = "item" + (r.room === activeRoom ? " active" : "") + (r.joined ? " joined" : " notjoined");
       const unread = r.unread || 0;
       const cnt = (r.count ?? 0);
       row.innerHTML = `
@@ -1353,7 +1467,7 @@ HTML = r"""<!doctype html>
       }
       if(o.type === "rooms"){
         for(const it of (o.items || [])){
-          ensureRoom(it.room, it.title, it.topic, it.count);
+          ensureRoom(it.room, it.title, it.topic, it.count, it.joined, it.last_ts, it.last_preview);
         }
         renderRooms();
         return;

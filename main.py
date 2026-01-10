@@ -23,9 +23,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 # ------------------------------------------------------------
 
 
-# VERSION: step18_vilnius_clock_no_commands (2026-01-10)
+# VERSION: step19_clock_time_only (2026-01-10)
 APP_TITLE = "HestioRooms"
-APP_SUBTITLE = "Step 18 – Vilnius clock + cleaner lobby"
+APP_SUBTITLE = "Step 19 – clock + cleaner lobby"
 APP_TAGLINE = "Kanalai, istorija, pin/edit/del/react"
 
 app = FastAPI()
@@ -1149,7 +1149,7 @@ HTML = r"""<!doctype html>
             <div class="small">__APP_TAGLINE__</div>
           </div>
         </div>
-        <div id="vilniusTimeLobby" class="vltime" title="Vilniaus laikas">Vilnius --:--:--</div>
+        <div id="vilniusTimeLobby" class="vltime" title="Laikas">--:--:--</div>
       </div>
       <div class="cardBody">
         <div class="panel" style="border-radius:16px;">
@@ -1184,7 +1184,7 @@ HTML = r"""<!doctype html>
         <span class="topic" id="topic">#main</span>
       </div>
       <div class="actions">
-        <div id="vilniusTime" class="vltime" title="Vilniaus laikas">Vilnius --:--:--</div>
+        <div id="vilniusTime" class="vltime" title="Laikas">--:--:--</div>
         <div class="pill">
           <span id="dot" class="dot"></span>
           <span id="st">disconnected</span>
@@ -1271,7 +1271,7 @@ HTML = r"""<!doctype html>
     });
 
     const tick = () => {
-      const s = "Vilnius " + fmt.format(new Date());
+      const s = fmt.format(new Date());
       if(elApp) elApp.textContent = s;
       if(elLobby) elLobby.textContent = s;
     };

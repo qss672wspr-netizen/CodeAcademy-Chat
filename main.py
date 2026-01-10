@@ -378,9 +378,6 @@ async def leave_room(ws: WebSocket, room_key: str) -> Tuple[bool, str]:
         return False, "no_user"
 
     key = norm_room(room_key)
-    if key == "main":
-        return False, "deny_main"
-
     async with state_lock:
         if key not in u.rooms:
             return False, "not_member"
@@ -390,10 +387,37 @@ async def leave_room(ws: WebSocket, room_key: str) -> Tuple[bool, str]:
         r.users.pop(ws, None)
 
         if u.active_room == key:
-            u.active_room = "main"
+            # Jei paliekamas aktyvus kanalas – perjungiame į kitą prisijungtą, o jei nėra – į "main"
+            u.active_room = next(iter(u.rooms), "main")
 
     await send_rooms_list(ws)
     await broadcast_userlist(key)
+    await broadcast_rooms_list_all()
+    return True, "ok"
+
+
+async def delete_room(ws: WebSocket, room_key: str) -> Tuple[bool, str]:
+    """Admin-only: remove a (non-default) room from the server list if it is empty (0 online)."""
+    u = all_users_by_ws.get(ws)
+    if not u:
+        return False, "no_user"
+    if not is_admin_nick(u.nick):
+        return False, "forbidden"
+
+    key = norm_room(room_key)
+    if not key or key == "main":
+        return False, "deny"
+    if key in DEFAULT_ROOMS:
+        return False, "deny_default"
+
+    async with state_lock:
+        r = rooms.get(key)
+        if not r:
+            return False, "not_found"
+        if len(r.users) > 0:
+            return False, "not_empty"
+        rooms.pop(key, None)
+
     await broadcast_rooms_list_all()
     return True, "ok"
 
@@ -645,12 +669,26 @@ async def handle_command(ws: WebSocket, u: User, active_room: str, text: str) ->
     if low.startswith("/leave "):
         arg = t0.split(" ", 1)[1].strip()
         ok, code = await leave_room(ws, arg)
-        if not ok and code == "deny_main":
-            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Iš #main išeiti negalima."})
-        elif not ok and code == "not_member":
+        if not ok and code == "not_member":
             await ws_send(ws, {"type": "sys", "t": ts(), "text": "Tu nesi šiame kanale."})
         else:
             await ws_send(ws, {"type": "sys", "t": ts(), "text": f"Palikai #{norm_room(arg)}."})
+        return True
+
+
+    if low.startswith("/room_delete "):
+        arg = t0.split(" ", 1)[1].strip()
+        ok, code = await delete_room(ws, arg)
+        if not ok and code == "forbidden":
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Tik admin gali trinti kanalus."})
+        elif not ok and code in ("deny", "deny_default"):
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Šio kanalo trinti negalima."})
+        elif not ok and code == "not_empty":
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Kanalą galima trinti tik kai jame 0 online."})
+        elif not ok and code == "not_found":
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Kanalas nerastas."})
+        else:
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": f"Kanalas #{norm_room(arg)} pašalintas."})
         return True
 
     if low == "/who":
@@ -968,6 +1006,7 @@ HTML = r"""<!doctype html>
 
     /* Online count highlight */
     #cnt{ color:var(--accent); font-weight:900; }
+    .onlineHead span{ color:var(--accent); }
 
     /* Logout: subtle red cue */
     #logout{
@@ -985,6 +1024,9 @@ HTML = r"""<!doctype html>
       display:inline-flex; align-items:center; justify-content:center; padding:0; line-height:1;
     }
     .leaveBtn:hover{ border-color:rgba(255,255,255,0.18); color:var(--text); }
+    .delBtn{ width:26px; height:26px; border-radius:10px; border:1px solid rgba(255,120,120,0.22); background:rgba(255,120,120,0.06); color: rgba(255,120,120,0.92); font-weight:900; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; }
+    .delBtn:hover{ border-color:rgba(255,120,120,0.38); background:rgba(255,120,120,0.10); color: var(--text); }
+    .delBtn:disabled{ opacity:0.45; cursor:not-allowed; }
     /* Online users list: compact layout */
     #users .item{ padding:6px 10px; margin-bottom:4px; }
     #users .urow{ display:flex; align-items:center; gap:6px; }
@@ -1179,7 +1221,7 @@ HTML = r"""<!doctype html>
       </div>
 
       <div class="panel" style="display:grid; grid-template-rows:auto 1fr; min-height:0;">
-        <div class="head"><span>Online</span><span class="small" id="cnt">0</span></div>
+        <div class="head onlineHead"><span>Online</span><span class="small" id="cnt">0</span></div>
         <div class="list" id="users"></div>
       </div>
     </div>
@@ -1391,7 +1433,7 @@ function esc(s){
 
       const unread = r.unread || 0;
       const cnt = (r.count ?? 0);
-      const canLeave = (r.room !== "main");
+      const canLeave = true;
       const leaveHtml = canLeave ? `<button class="leaveBtn" title="Išeiti" aria-label="Išeiti">×</button>` : "";
 
       row.innerHTML = `
@@ -1431,6 +1473,10 @@ function esc(s){
       row.className = "item notjoined";
 
       const cnt = (r.count ?? 0);
+      const isAdminUser = isAdmin();
+      const canDelete = isAdminUser && (cnt === 0);
+      const delHtml = isAdminUser ? `<button class="delBtn" title="${canDelete ? "Trinti" : "Negalima trinti, kol yra online"}" aria-label="Trinti" ${canDelete ? "" : "disabled"}>×</button>` : "";
+
       row.innerHTML = `
         <div>
           <div class="iname">${esc(r.title)}</div>
@@ -1438,6 +1484,7 @@ function esc(s){
         </div>
         <div style="display:flex; gap:8px; align-items:center;">
           <div class="countpill" title="online">${cnt}</div>
+          ${delHtml}
         </div>
       `;
 
@@ -1446,7 +1493,20 @@ function esc(s){
         wsSend({type:"say", room: activeRoom, text: `/join #${r.room}`});
       });
 
+      if(isAdminUser){
+        const btn = row.querySelector(".delBtn");
+        if(btn){
+          btn.addEventListener("click", (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            wsSend({type:"say", room: activeRoom, text: `/room_delete #${r.room}`});
+          });
+        }
+      }
+
       roomsAvailEl.appendChild(row);
+    }
+  }
     }
   }
 

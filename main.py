@@ -932,6 +932,15 @@ HTML = r"""<!doctype html>
     .item.active{ border-color: rgba(124,255,107,.28); background: rgba(124,255,107,.06); }
     .iname{ font-weight:900; font-size:13px; }
     .idesc{ color:var(--muted); font-size:11px; margin-top:2px; }
+    /* Rooms panel sections */
+    .secTitle{ color:var(--muted); font-size:11px; font-weight:900; letter-spacing:.06em; text-transform:uppercase; margin:2px 2px 8px; }
+    .roomsGroup{ display:flex; flex-direction:column; }
+    .leaveBtn{
+      width:26px; height:26px; border-radius:10px; border:1px solid rgba(255,255,255,0.08);
+      background:rgba(0,0,0,0.12); color:var(--muted); font-weight:900; cursor:pointer;
+      display:inline-flex; align-items:center; justify-content:center; padding:0; line-height:1;
+    }
+    .leaveBtn:hover{ border-color:rgba(255,255,255,0.18); color:var(--text); }
     /* Online users list: compact layout */
     #users .item{ padding:6px 10px; margin-bottom:4px; }
     #users .urow{ display:flex; align-items:center; gap:6px; }
@@ -1105,7 +1114,12 @@ HTML = r"""<!doctype html>
     <div class="main">
       <div class="panel" style="display:grid; grid-template-rows:auto 1fr auto; min-height:0;">
         <div class="head"><span>Kanalai</span><span class="small">click</span></div>
-        <div class="list" id="rooms"></div>
+        <div class="list" id="roomsWrap">
+          <div class="secTitle">Mano kanalai</div>
+          <div id="roomsMine" class="roomsGroup"></div>
+          <div class="secTitle" style="margin-top:10px;">Galimi kanalai</div>
+          <div id="roomsAvail" class="roomsGroup"></div>
+        </div>
         <div style="padding:10px 10px 12px 10px; border-top:1px solid var(--border);">
           <input id="roomJoin" placeholder="įrašyk #room ir Enter (pvz #games)" />
         </div>
@@ -1139,7 +1153,8 @@ HTML = r"""<!doctype html>
   const pwRow = document.getElementById("pwRow");
   const pwPick = document.getElementById("pwPick");
 
-  const roomsEl = document.getElementById("rooms");
+  const roomsMineEl = document.getElementById("roomsMine");
+  const roomsAvailEl = document.getElementById("roomsAvail");
   const usersEl = document.getElementById("users");
   const cntEl = document.getElementById("cnt");
   const topicEl = document.getElementById("topic");
@@ -1165,6 +1180,7 @@ HTML = r"""<!doctype html>
 
   const roomState = new Map(); // roomKey -> {title, topic, unread, items:[]}
   let activeRoom = "main";
+  let pendingJoinRoom = null; // for click-to-join available rooms
 
   const msgDom = new Map(); // id -> element (for updates)
 
@@ -1313,12 +1329,22 @@ function esc(s){
   function renderRooms(){
     const rooms = Array.from(roomState.values());
     rooms.sort((a,b)=>a.title.localeCompare(b.title, "lt"));
-    roomsEl.innerHTML = "";
-    for(const r of rooms){
+
+    const mine = rooms.filter(r => !!r.joined);
+    const avail = rooms.filter(r => !r.joined && !isDMRoom(r.room));
+
+    roomsMineEl.innerHTML = "";
+    roomsAvailEl.innerHTML = "";
+
+    for(const r of mine){
       const row = document.createElement("div");
-      row.className = "item" + (r.room === activeRoom ? " active" : "") + (r.joined ? " joined" : " notjoined");
+      row.className = "item" + (r.room === activeRoom ? " active" : "") + " joined";
+
       const unread = r.unread || 0;
       const cnt = (r.count ?? 0);
+      const canLeave = (r.room !== "main");
+      const leaveHtml = canLeave ? `<button class="leaveBtn" title="Išeiti" aria-label="Išeiti">×</button>` : "";
+
       row.innerHTML = `
         <div>
           <div class="iname">${esc(r.title)}</div>
@@ -1327,14 +1353,56 @@ function esc(s){
         <div style="display:flex; gap:8px; align-items:center;">
           <div class="countpill" title="online">${cnt}</div>
           <div class="badge" style="${unread>0 ? 'display:inline-flex;' : ''}">${unread}</div>
+          ${leaveHtml}
         </div>
       `;
-      row.addEventListener("click", () => switchRoom(r.room));
-      roomsEl.appendChild(row);
+
+      row.addEventListener("click", (ev) => {
+        const tgt = ev.target;
+        if(tgt instanceof HTMLElement && tgt.closest(".leaveBtn")) return;
+        switchRoom(r.room);
+      });
+
+      if(canLeave){
+        const btn = row.querySelector(".leaveBtn");
+        if(btn){
+          btn.addEventListener("click", (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            wsSend({type:"say", room: activeRoom, text: `/leave ${r.room}`});
+          });
+        }
+      }
+
+      roomsMineEl.appendChild(row);
+    }
+
+    for(const r of avail){
+      const row = document.createElement("div");
+      row.className = "item notjoined";
+
+      const cnt = (r.count ?? 0);
+      row.innerHTML = `
+        <div>
+          <div class="iname">${esc(r.title)}</div>
+          <div class="idesc">${esc(r.topic || "")}</div>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <div class="countpill" title="online">${cnt}</div>
+        </div>
+      `;
+
+      row.addEventListener("click", () => {
+        pendingJoinRoom = r.room;
+        wsSend({type:"say", room: activeRoom, text: `/join #${r.room}`});
+      });
+
+      roomsAvailEl.appendChild(row);
     }
   }
 
-  function renderUsers(items){
+
+function renderUsers(items){
     cntEl.textContent = String(items.length);
     usersEl.innerHTML = "";
     for(const u of items){
@@ -1596,6 +1664,29 @@ function esc(s){
         for(const it of (o.items || [])){
           ensureRoom(it.room, it.title, it.topic, it.count, it.joined, it.last_ts, it.last_preview);
         }
+
+        // If we clicked an "available" channel, switch once join is confirmed.
+        if(pendingJoinRoom){
+          const rj = roomState.get(pendingJoinRoom);
+          if(rj && rj.joined){
+            const target = pendingJoinRoom;
+            pendingJoinRoom = null;
+            switchRoom(target);
+            return;
+          }
+        }
+
+        // If we are no longer joined in the active room (e.g., after leaving), fall back to a joined room.
+        const ar = roomState.get(activeRoom);
+        if(ar && !ar.joined){
+          const joined = Array.from(roomState.values()).filter(x => !!x.joined);
+          const fallback = joined.find(x => x.room === "main") || joined[0];
+          if(fallback){
+            switchRoom(fallback.room);
+            return;
+          }
+        }
+
         renderRooms();
         return;
       }

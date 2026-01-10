@@ -223,7 +223,6 @@ async def db_list_pins(room: str, limit: int = 50) -> list[int]:
 class User:
     nick: str
     color: str
-    lang: str = "lt"
     rooms: Set[str] = field(default_factory=set)
     active_room: str = "main"
     joined_at: float = field(default_factory=time.time)
@@ -231,7 +230,6 @@ class User:
 
 @dataclass
 class Room:
-
     key: str
     title: str
     topic: str
@@ -246,94 +244,6 @@ DEFAULT_ROOMS = {
     "games": {"title": "#games", "topic": "Žaidimai ir pramogos"},
     "help": {"title": "#help", "topic": "Pagalba / klausimai"},
 }
-
-# ----------------- I18N (LT/EN) -----------------
-LANGS = {"lt", "en"}
-
-TR = {
-    "lt": {
-        "BAD_NICK": "Netinkamas nick.",
-        "NICK_TAKEN": "Nick užimtas.",
-        "PW_REQUIRED": "Admin nick reikalauja slaptažodžio.",
-        "BAD_PASSWORD": "Neteisingas slaptažodis.",
-        "ROOM_BAD": "Netinkamas kanalas.",
-        "JOIN_OK": "Prisijungei prie #{room}.",
-        "LEAVE_OK": "Palikai #{room}.",
-        "LEAVE_MAIN_DENY": "Iš #main išeiti negalima.",
-        "LEAVE_NOT_MEMBER": "Tu nesi šiame kanale.",
-        "TIME": "Serverio laikas (Vilnius): {t}",
-        "LANG_SET": "Kalba pakeista į: {lang}",
-        "LANG_USAGE": "Naudojimas: /lang lt arba /lang en",
-        "RATE_LIMIT": "Per daug žinučių per trumpą laiką. Palauk kelias sekundes.",
-        "HELP_TITLE": "Komandos:",
-    },
-    "en": {
-        "BAD_NICK": "Invalid nickname.",
-        "NICK_TAKEN": "Nickname is taken.",
-        "PW_REQUIRED": "Admin nickname requires a password.",
-        "BAD_PASSWORD": "Wrong password.",
-        "ROOM_BAD": "Invalid channel.",
-        "JOIN_OK": "You joined #{room}.",
-        "LEAVE_OK": "You left #{room}.",
-        "LEAVE_MAIN_DENY": "You cannot leave #main.",
-        "LEAVE_NOT_MEMBER": "You are not in that channel.",
-        "TIME": "Server time (Vilnius): {t}",
-        "LANG_SET": "Language set to: {lang}",
-        "LANG_USAGE": "Usage: /lang lt or /lang en",
-        "RATE_LIMIT": "Too many messages too fast. Wait a few seconds.",
-        "HELP_TITLE": "Commands:",
-    },
-}
-
-def t(lang: str, key: str, **kwargs) -> str:
-    lang = (lang or "lt").lower()
-    if lang not in LANGS:
-        lang = "lt"
-    s = TR[lang].get(key, key)
-    try:
-        return s.format(**kwargs)
-    except Exception:
-        return s
-
-HELP_TEXT_LT = (
-    "Komandos:\n"
-    "  /help               - pagalba\n"
-    "  /rooms              - kanalų sąrašas\n"
-    "  /join #room         - prisijungti / sukurti kanalą\n"
-    "  /leave #room        - palikti kanalą\n"
-    "  /who                - kas online (aktyviame kanale)\n"
-    "  /topic [TEKSTAS]    - parodyti / pakeisti temą\n"
-    "  /history [N]        - kanalo istorija\n"
-    "  /time               - serverio laikas\n"
-    "  /pin ID             - prisegti žinutę\n"
-    "  /pins               - parodyti pin’us\n"
-    "  /quote ID           - pacituoti žinutę\n"
-    "  /edit ID TEKSTAS    - redaguoti savo žinutę (iki 5 min)\n"
-    "  /del ID             - ištrinti savo žinutę (iki 5 min)\n"
-    "  /react ID 😀         - reakcija į žinutę\n"
-    "  /lang lt|en         - pakeisti kalbą\n"
-)
-HELP_TEXT_EN = (
-    "Commands:\n"
-    "  /help               - help\n"
-    "  /rooms              - list channels\n"
-    "  /join #room         - join / create a channel\n"
-    "  /leave #room        - leave a channel\n"
-    "  /who                - who is online (active channel)\n"
-    "  /topic [TEXT]       - show / set topic\n"
-    "  /history [N]        - channel history\n"
-    "  /time               - server time\n"
-    "  /pin ID             - pin a message\n"
-    "  /pins               - show pins\n"
-    "  /quote ID           - quote a message\n"
-    "  /edit ID TEXT       - edit own message (within 5 min)\n"
-    "  /del ID             - delete own message (within 5 min)\n"
-    "  /react ID 😀         - react to a message\n"
-    "  /lang lt|en         - set language\n"
-)
-
-def help_text(lang: str) -> str:
-    return HELP_TEXT_EN if (lang or "lt").lower() == "en" else HELP_TEXT_LT
 
 # ----------------- In-memory state -----------------
 state_lock = asyncio.Lock()
@@ -496,12 +406,12 @@ async def focus_room(ws: WebSocket, room_key: str) -> None:
     if key not in u.rooms:
         ok, code = await join_room(ws, key)
         if not ok:
-            await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "ROOM_BAD")})
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Netinkamas kanalas."})
             return
 
     u.active_room = key
     r = ensure_room(key)
-    await ws_send(ws, {"type": "topic", "room": key, "t": ts(), "title": r.title, "topic": r.topic})
+    await ws_send(ws, {"type": "topic", "room": key, "t": ts(), "text": f"{r.title} — {r.topic}"})
     await ws_send(ws, {"type": "users", "room": key, "t": ts(), "items": room_userlist(key)})
     hist = await db_load_history(key, JOIN_HISTORY_DEFAULT)
     await ws_send(ws, {"type": "history", "room": key, "t": ts(), "items": hist})
@@ -551,6 +461,26 @@ async def heartbeat(ws: WebSocket) -> None:
         return
 
 # ----------------- Commands -----------------
+HELP_TEXT = (
+    "Komandos:\n"
+    "  /help               - šis sąrašas\n"
+    "  /rooms              - kanalų sąrašas\n"
+    "  /join #room         - prisijungti/sukurti kanalą\n"
+    "  /leave #room        - palikti kanalą (iš #main negalima)\n"
+    "  /topic [TEKSTAS]    - rodyti / keisti temą aktyviame kanale\n"
+    "  /who                - online aktyviame kanale\n"
+    "  /history [N]        - istorija (default 120)\n"
+    "  /time               - serverio laikas (Vilnius)\n"
+    "  /pin ID             - prisegti žinutę\n"
+    "  /pins               - parodyti prisegtas\n"
+    "  /quote ID           - pacituoti (įdėti į input)\n"
+    "  /edit ID NAUJAS     - redaguoti savo žinutę (5 min)\n"
+    "  /del ID             - ištrinti savo žinutę (5 min)\n"
+    "  /react ID 😀         - reakcija į žinutę (toggle)\n"
+    "\n"
+    "Patarimas: Alt+click ant žinutės ID = greita reakcija (client).\n"
+)
+
 async def cmd_rooms(ws: WebSocket) -> None:
     await send_rooms_list(ws)
 
@@ -573,7 +503,7 @@ async def cmd_topic(ws: WebSocket, room_key: str, arg: Optional[str]) -> None:
     r.topic = new_topic
     msg_id = await db_insert_message(room_key, "sys", ts(), None, None, f"Tema pakeista: {new_topic}", {"kind": "topic"})
     update_room_activity(room_key, f"[topic] {new_topic}")
-    await room_broadcast(room_key, {"type": "topic", "room": room_key, "t": ts(), "title": r.title, "topic": r.topic})
+    await room_broadcast(room_key, {"type": "topic", "room": room_key, "t": ts(), "text": f"{r.title} — {r.topic}"})
     await room_broadcast(room_key, {"type": "sys", "room": room_key, "t": ts(), "id": msg_id, "text": f"Tema pakeista: {new_topic}"})
     for w in list(r.clients):
         await send_rooms_list(w)
@@ -696,7 +626,7 @@ async def handle_command(ws: WebSocket, u: User, active_room: str, text: str) ->
     low = t0.lower()
 
     if low in ("/help", "/?"):
-        await ws_send(ws, {"type": "sys", "t": ts(), "text": help_text(u.lang)})
+        await ws_send(ws, {"type": "sys", "t": ts(), "text": HELP_TEXT})
         return True
 
     if low == "/rooms":
@@ -709,18 +639,18 @@ async def handle_command(ws: WebSocket, u: User, active_room: str, text: str) ->
         if not ok and code == "bad_room":
             await ws_send(ws, {"type": "sys", "t": ts(), "text": "Netinkamas kanalo pavadinimas. Pvz: #main, #games"})
         else:
-            await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "JOIN_OK", room=norm_room(arg))})
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": f"Prisijungei prie #{norm_room(arg)}."})
         return True
 
     if low.startswith("/leave "):
         arg = t0.split(" ", 1)[1].strip()
         ok, code = await leave_room(ws, arg)
         if not ok and code == "deny_main":
-            await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "LEAVE_MAIN_DENY")})
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Iš #main išeiti negalima."})
         elif not ok and code == "not_member":
-            await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "LEAVE_NOT_MEMBER")})
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Tu nesi šiame kanale."})
         else:
-            await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "LEAVE_OK", room=norm_room(arg))})
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": f"Palikai #{norm_room(arg)}."})
         return True
 
     if low == "/who":
@@ -745,7 +675,7 @@ async def handle_command(ws: WebSocket, u: User, active_room: str, text: str) ->
         return True
 
     if low == "/time":
-        await ws_send(ws, {"type": "sys", "t": ts(), "text": t(u.lang, "TIME", t=ts())})
+        await ws_send(ws, {"type": "sys", "t": ts(), "text": f"Serverio laikas (Vilnius): {ts()}"})
         return True
 
     if low.startswith("/pin "):
@@ -818,56 +748,37 @@ async def health():
 
 
 @app.get("/check_nick")
-async def check_nick(nick: str = "", pw: str = "", lang: str = "lt"):
-    lang = (lang or "lt").strip().lower()
-    if lang not in LANGS:
-        lang = "lt"
-
+async def check_nick(nick: str = "", pw: str = ""):
     n = (nick or "").strip()
     if not valid_nick(n):
-        return JSONResponse({"ok": False, "code": "BAD_NICK", "reason": t(lang, "BAD_NICK"), "needs_pw": is_admin_nick(n)})
+        return JSONResponse({"ok": False, "code": "BAD_NICK", "reason": "Netinkamas nick.", "needs_pw": is_admin_nick(n)})
 
     # admin password gate (tik jei ADMIN_PASSWORD sukonfigūruotas)
     if is_admin_nick(n) and ADMIN_PASSWORD:
         if not (pw or "").strip():
-            return JSONResponse({"ok": False, "code": "PW_REQUIRED", "reason": t(lang, "PW_REQUIRED"), "needs_pw": True})
+            return JSONResponse({"ok": False, "code": "PW_REQUIRED", "reason": "Admin nick reikalauja slaptažodžio.", "needs_pw": True})
         if not admin_pw_ok((pw or "").strip()):
-            return JSONResponse({"ok": False, "code": "BAD_PASSWORD", "reason": t(lang, "BAD_PASSWORD"), "needs_pw": True})
+            return JSONResponse({"ok": False, "code": "BAD_PASSWORD", "reason": "Neteisingas slaptažodis.", "needs_pw": True})
 
     async with state_lock:
         if n.casefold() in all_ws_by_nick_cf:
-            return JSONResponse({"ok": False, "code": "NICK_TAKEN", "reason": t(lang, "NICK_TAKEN"), "needs_pw": is_admin_nick(n)})
-
+            return JSONResponse({"ok": False, "code": "NICK_TAKEN", "reason": "Nick užimtas.", "needs_pw": is_admin_nick(n)})
     return JSONResponse({"ok": True, "needs_pw": is_admin_nick(n)})
 
 # ----------------- WebSocket endpoint -----------------
-
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     nick = (ws.query_params.get("nick") or "").strip()
     pw = (ws.query_params.get("pw") or "").strip()
-    lang = (ws.query_params.get("lang") or "lt").strip().lower()
-    if lang not in LANGS:
-        lang = "lt"
 
     await ws.accept()
     peer = f"{ws.client.host if ws.client else 'unknown'}"
     log.info("WS accepted %s nick=%r", peer, nick)
 
     if not valid_nick(nick):
-        await ws_send(ws, {"type": "error", "code": "BAD_NICK", "text": t(lang, "BAD_NICK")})
+        await ws_send(ws, {"type": "error", "code": "BAD_NICK", "text": "Netinkamas nick."})
         await ws.close()
         return
-
-    if is_admin_nick(nick) and ADMIN_PASSWORD:
-        if not pw:
-            await ws_send(ws, {"type": "error", "code": "PW_REQUIRED", "text": t(lang, "PW_REQUIRED")})
-            await ws.close()
-            return
-        if not admin_pw_ok(pw):
-            await ws_send(ws, {"type": "error", "code": "BAD_PASSWORD", "text": t(lang, "BAD_PASSWORD")})
-            await ws.close()
-            return
 
     for rk in DEFAULT_ROOMS.keys():
         ensure_room(rk)
@@ -875,14 +786,14 @@ async def ws_endpoint(ws: WebSocket):
     async with state_lock:
         cf = nick.casefold()
         if cf in all_ws_by_nick_cf:
-            await ws_send(ws, {"type": "error", "code": "NICK_TAKEN", "text": t(lang, "NICK_TAKEN")})
+            await ws_send(ws, {"type": "error", "code": "NICK_TAKEN", "text": "Nick užimtas."})
             await ws.close()
             return
 
         used = {u.color for u in all_users_by_ws.values()}
         color = alloc_color(used)
 
-        u = User(nick=nick, color=color, lang=lang)
+        u = User(nick=nick, color=color)
         all_users_by_ws[ws] = u
         all_ws_by_nick_cf[cf] = ws
 
@@ -890,8 +801,7 @@ async def ws_endpoint(ws: WebSocket):
 
     await join_room(ws, "main")
     await focus_room(ws, "main")
-    await ws_send(ws, {"type": "me", "t": ts(), "nick": u.nick, "color": u.color, "lang": u.lang})
-    await ws_send(ws, {"type": "lang", "lang": u.lang})
+    await ws_send(ws, {"type": "me", "t": ts(), "nick": u.nick, "color": u.color})
 
     try:
         while True:
@@ -969,832 +879,395 @@ HTML = r"""<!doctype html>
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>HestioRooms Chat</title>
+  <title>HestioRooms – Step 5</title>
   <style>
     :root{
-      --bg:#06080a;
-      --panel:rgba(6,10,10,.62);
-      --panel2:rgba(6,10,10,.38);
-      --panel3:rgba(6,10,10,.22); /* center log even more transparent */
-      --border:rgba(124,255,107,.18);
-      --text:#caffd9;
-      --muted:rgba(202,255,217,.55);
-      --accent:#7cff6b;
-      --accent2:#6be4ff;
-      --danger:#ff6b6b;
-      --shadow:0 10px 30px rgba(0,0,0,.45);
-      --radius:16px;
-      --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Courier New",monospace;
+      --bg:#0b0f14; --panel:rgba(255,255,255,.06); --panel2:rgba(255,255,255,.05);
+      --border:rgba(255,255,255,.13); --text:#d7e3f4; --muted:rgba(215,227,244,.58);
+      --accent:#7cff6b; --accent2:#6be4ff; --danger:#ff7a7a;
+      --mono:ui-monospace, Menlo, Consolas, monospace; --radius:16px; --shadow:0 16px 44px rgba(0,0,0,.36);
     }
-
-    /* Themes (cardinaliai skirtingos) */
-    body.theme-cyber{
-      --bg:#06080a;
-      --panel:rgba(6,10,10,.62);
-      --panel2:rgba(6,10,10,.38);
-      --panel3:rgba(6,10,10,.22);
-      --border:rgba(124,255,107,.18);
-      --text:#caffd9;
-      --muted:rgba(202,255,217,.55);
-      --accent:#7cff6b;
-      --accent2:#6be4ff;
-    }
-    body.theme-glass{
-      --bg:#0a0c12;
-      --panel:rgba(18, 22, 35, .62);
-      --panel2:rgba(14, 18, 28, .42);
-      --panel3:rgba(14, 18, 28, .24);
-      --border:rgba(130,170,255,.18);
-      --text:#e7eeff;
-      --muted:rgba(231,238,255,.55);
-      --accent:#82aaff;
-      --accent2:#ff6be8;
-    }
-    body.theme-matrix{
-      --bg:#020403;
-      --panel:rgba(2, 8, 4, .64);
-      --panel2:rgba(1, 6, 3, .44);
-      --panel3:rgba(1, 6, 3, .26);
-      --border:rgba(0,255,132,.18);
-      --text:#bfffd0;
-      --muted:rgba(191,255,208,.55);
-      --accent:#00ff84;
-      --accent2:#7cff6b;
-    }
-    body.theme-crt{
-      --bg:#050607;
-      --panel:rgba(7, 9, 10, .66);
-      --panel2:rgba(6, 7, 8, .46);
-      --panel3:rgba(6, 7, 8, .26);
-      --border:rgba(255,214,107,.18);
-      --text:#ffe9b8;
-      --muted:rgba(255,233,184,.55);
-      --accent:#ffd66b;
-      --accent2:#7cff6b;
-    }
-    body.theme-light{
-      --bg:#f6f8fb;
-      --panel:rgba(255,255,255,.88);
-      --panel2:rgba(255,255,255,.70);
-      --panel3:rgba(255,255,255,.46);
-      --border:rgba(8,20,40,.14);
-      --text:#0b1220;
-      --muted:rgba(11,18,32,.55);
-      --accent:#246BFD;
-      --accent2:#12B981;
-      --danger:#e23d3d;
-      --shadow:0 12px 28px rgba(15, 25, 35, .14);
-    }
-
     html,body{height:100%;}
     body{
-      margin:0;
-      background:var(--bg);
-      color:var(--text);
-      font-family:var(--mono);
-      overflow:hidden;
-    }
-
-    /* Background grid + scan */
-    .bg{ position:fixed; inset:0; z-index:0; pointer-events:none; }
-    .bg::before{
-      content:""; position:absolute; inset:-2px; opacity:.20;
+      margin:0; color:var(--text); font-family:var(--mono); overflow:hidden;
       background:
-        linear-gradient(to right, rgba(255,255,255,.04) 1px, transparent 1px),
-        linear-gradient(to bottom, rgba(255,255,255,.03) 1px, transparent 1px);
-      background-size: 46px 46px;
-      mask-image: radial-gradient(circle at 40% 10%, rgba(0,0,0,1) 0%, rgba(0,0,0,.7) 40%, rgba(0,0,0,0) 75%);
+        radial-gradient(900px 520px at 15% 10%, rgba(124,255,107,.14), transparent 60%),
+        radial-gradient(900px 520px at 80% 35%, rgba(107,228,255,.12), transparent 60%),
+        linear-gradient(180deg, rgba(0,0,0,.40), rgba(0,0,0,.58)), var(--bg);
     }
-    body.theme-light .bg::before{ opacity:.10; }
-    .bg::after{
-      content:""; position:absolute; inset:0; opacity:.10;
-      background: repeating-linear-gradient(
-        to bottom,
-        rgba(0,0,0,0) 0px,
-        rgba(0,0,0,0) 2px,
-        rgba(0,0,0,.40) 3px
-      );
-      animation: scan 8s linear infinite;
-    }
-    body.theme-light .bg::after{ opacity:.04; }
-    @keyframes scan{ 0%{transform:translateY(0);} 100%{transform:translateY(10px);} }
-
-    /* Watermark logo (ryškiau) */
+    /* Watermark logo */
     .wm{
-      position:fixed;
-      inset:0;
-      z-index:0;
-      pointer-events:none;
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      opacity:.18; /* increased */
-      transform: translateY(-4vh);
+      position:fixed; inset:0; pointer-events:none; z-index:0;
+      display:flex; align-items:center; justify-content:center;
+      opacity:.08;
     }
-    body.theme-light .wm{ opacity:.14; }
-    .wm img{
-      width:min(820px, 78vw);
-      max-width: 92vw;
-      height:auto;
-      filter:
-        drop-shadow(0 0 26px rgba(0,0,0,.55))
-        drop-shadow(0 0 34px rgba(124,255,107,.16))
-        saturate(1.12)
-        contrast(1.12);
-      mix-blend-mode: screen;
+    .wm img{ width:min(760px, 78vw); height:auto; }
+    .wrap{ position:relative; z-index:1; height:100%; display:grid; grid-template-rows:auto 1fr auto; gap:12px; padding:14px; box-sizing:border-box; }
+    .top{
+      border:1px solid var(--border); border-radius:var(--radius); background:var(--panel);
+      padding:12px 14px; display:flex; justify-content:space-between; align-items:center; gap:12px;
+      backdrop-filter: blur(10px); box-shadow: var(--shadow);
     }
-    body.theme-light .wm img{
-      filter:
-        drop-shadow(0 0 22px rgba(15,25,35,.18))
-        saturate(1.06)
-        contrast(1.06);
-      mix-blend-mode: multiply;
-    }
-
-    .app{
-      position:relative; z-index:1;
-      height:100%;
-      display:grid;
-      grid-template-rows:auto 1fr auto;
-      gap:12px;
-      padding:14px;
-      box-sizing:border-box;
-    }
-
-    .topbar{
-      display:flex; align-items:center; justify-content:space-between; gap:12px;
-      padding:12px 14px;
-      border:1px solid var(--border);
-      border-radius:var(--radius);
-      background:linear-gradient(180deg, var(--panel), rgba(0,0,0,0));
-      box-shadow:var(--shadow);
-      backdrop-filter: blur(10px);
-    }
-    body.theme-light .topbar{ background:linear-gradient(180deg, var(--panel), rgba(255,255,255,0)); }
-    .brand{ display:flex; gap:10px; align-items:baseline; min-width: 220px; }
-    .brand .title{ font-weight:1000; color:var(--accent); }
-    .brand .topic{ font-weight:900; color:var(--text); }
-
-    .status{
-      color:var(--muted); font-size:13px;
-      display:flex; align-items:center; gap:10px;
-      justify-content:center; flex:1;
-      text-align:center;
-      overflow:hidden;
-    }
-    .pill{
-      border:1px solid var(--border);
-      background:rgba(0,0,0,.10);
-      padding:6px 10px;
-      border-radius:999px;
-      display:inline-flex; align-items:center; gap:8px;
-      white-space:nowrap;
-      max-width: 100%;
-    }
-    body.theme-light .pill{ background:rgba(11,18,32,.04); }
-    .dot{ width:10px; height:10px; border-radius:999px; background:var(--danger);
-      box-shadow:0 0 14px rgba(255,107,107,.18); }
-    .dot.ok{ background:var(--accent2); box-shadow:0 0 14px rgba(18,185,129,.18); }
-
-    .main{
-      display:grid;
-      grid-template-columns: 280px 1fr 320px;
-      gap:12px;
-      min-height:0;
-    }
-    .panel{
-      border:1px solid var(--border);
-      border-radius:var(--radius);
-      background:var(--panel2);
-      box-shadow:var(--shadow);
-      backdrop-filter: blur(10px);
-      overflow:hidden;
-      min-height:0;
-    }
-    /* Center chat more transparent */
-    .panel.center{
-      background:var(--panel3);
-    }
-
-    .sidehead{
-      padding:12px 12px;
-      border-bottom:1px solid var(--border);
-      display:flex; justify-content:space-between; align-items:center;
-      color:var(--muted); font-size:13px;
-    }
-    .sidehead b{ color:var(--text); }
-
-    .search{
-      padding:10px 12px;
-      border-bottom:1px solid var(--border);
-    }
-    .search input{
-      width:100%; padding:10px 10px;
-      font-family:var(--mono);
-      background:rgba(0,0,0,.12);
-      border:1px solid var(--border);
-      border-radius:12px;
-      color:var(--text);
-      outline:none;
-      box-sizing:border-box;
-    }
-    body.theme-light .search input{ background:rgba(11,18,32,.04); }
-
-    .list{
-      padding:10px 10px 12px 10px;
-      overflow:auto;
-      min-height:0;
-    }
+    .brand{ display:flex; gap:12px; align-items:center; }
+    .brand img{ width:38px; height:38px; border-radius:10px; box-shadow:0 10px 30px rgba(0,0,0,.35); }
+    .brand b{ color:var(--accent); letter-spacing:.4px; }
+    .topic{ color:var(--text); font-weight:900; }
+    .pill{ display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; border:1px solid var(--border); background:rgba(0,0,0,.18);}
+    .dot{ width:10px; height:10px; border-radius:50%; background:#ff5c5c; }
+    .dot.ok{ background:#21d07a; }
+    .main{ min-height:0; display:grid; grid-template-columns: 280px 1fr 280px; gap:12px; }
+    .panel{ min-height:0; border:1px solid var(--border); border-radius:var(--radius); background:var(--panel2); overflow:hidden; backdrop-filter: blur(10px); box-shadow: var(--shadow); }
+    .head{ padding:10px 12px; border-bottom:1px solid var(--border); color:var(--muted); display:flex; justify-content:space-between; align-items:center; gap:10px; }
+    .list{ padding:10px 10px 12px 10px; overflow:auto; min-height:0; }
     .item{
       display:flex; align-items:center; justify-content:space-between; gap:10px;
-      padding:9px 10px;
-      border-radius:14px;
-      border:1px solid rgba(255,255,255,0.03);
-      background:rgba(0,0,0,0.08);
-      margin-bottom:8px;
-      cursor:pointer;
-      user-select:none;
+      padding:10px 10px; border-radius:14px; border:1px solid rgba(255,255,255,0.04);
+      background:rgba(0,0,0,0.12); margin-bottom:8px; cursor:pointer; user-select:none;
     }
-    body.theme-light .item{ background:rgba(11,18,32,.03); border-color:rgba(11,18,32,.06); }
-    .item:hover{ filter:brightness(1.04); }
-    .item.active{
-      border-color: rgba(124,255,107,.28);
-      background: rgba(124,255,107,.06);
-    }
-    body.theme-light .item.active{
-      border-color: rgba(36,107,253,.28);
-      background: rgba(36,107,253,.06);
-    }
-
+    .item:hover{ filter:brightness(1.06); }
+    .item.active{ border-color: rgba(124,255,107,.28); background: rgba(124,255,107,.06); }
     .iname{ font-weight:900; font-size:13px; }
     .idesc{ color:var(--muted); font-size:11px; margin-top:2px; }
     .badge{
-      min-width:24px;
+      min-width:22px; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:900;
+      color:var(--bg); background:var(--accent2); display:none; align-items:center; justify-content:center;
+    }
+
+    .countpill{
+      min-width:22px;
       padding:2px 8px;
       border-radius:999px;
       font-size:12px;
       font-weight:900;
       color:var(--bg);
-      background:var(--accent2);
+      background:var(--accent);
       display:inline-flex;
       align-items:center;
       justify-content:center;
+      opacity:.85;
     }
 
-    #log{
-      padding:14px 16px;
-      overflow:auto;
-      white-space:pre-wrap;
-      line-height:1.45;
-      min-height:0;
-    }
+.lastpill{
+  min-width:46px;
+  padding:2px 8px;
+  border-radius:999px;
+  font-size:12px;
+  font-weight:900;
+  color:var(--text);
+  border:1px solid rgba(255,255,255,.10);
+  background:rgba(0,0,0,.12);
+  text-align:center;
+  opacity:.85;
+}
+.item.notjoined{ opacity:.72; }
+.joinDot{
+  width:10px; height:10px; border-radius:999px;
+  background: var(--accent2);
+  box-shadow:0 0 10px rgba(107,228,255,.18);
+  opacity:0;
+}
+.item.joined .joinDot{ opacity:1; }
+
+    #log{ padding:12px 14px; overflow:auto; min-height:0; white-space:pre-wrap; line-height:1.45; }
     .line{ margin:2px 0; }
     .t{ color: rgba(124,255,107,.40); }
-    body.theme-light .t{ color: rgba(11,18,32,.38); }
     .sys{ color: var(--muted); }
-    .msg{ color: var(--text); }
     .nick{ font-weight:900; }
     .idTag{
-      color: rgba(202,255,217,.38);
+      color: rgba(215,227,244,.35);
       font-size: 12px;
       margin-right: 8px;
-    }
-    body.theme-light .idTag{ color: rgba(11,18,32,.35); }
-
-    .bottombar{
-      display:grid;
-      grid-template-columns: 1fr 140px;
-      gap:12px;
-      padding:12px 12px;
-      border:1px solid var(--border);
-      border-radius:var(--radius);
-      background:var(--panel);
-      box-shadow:var(--shadow);
-      backdrop-filter: blur(10px);
-    }
-    .bottombar input{
-      width:100%; padding:12px 12px;
-      font-family:var(--mono);
-      background:rgba(0,0,0,.12);
-      border:1px solid var(--border);
-      border-radius:12px;
-      color:var(--text);
-      outline:none;
-      box-sizing:border-box;
-    }
-    body.theme-light .bottombar input{ background:rgba(11,18,32,.04); }
-    .bottombar button{
-      padding:12px 12px;
-      font-family:var(--mono);
-      font-weight:900;
-      color:var(--bg);
-      background:var(--accent);
-      border:1px solid rgba(0,0,0,.2);
-      border-radius:12px;
+      user-select:none;
       cursor:pointer;
     }
-    .bottombar button:hover{ filter:brightness(1.06); }
-    .bottombar button:disabled{ opacity:.55; cursor:not-allowed; }
-
-    /* Lobby */
-    #lobby{
-      position:fixed; inset:0; z-index:10;
-      display:flex; align-items:center; justify-content:center;
-      background:rgba(0,0,0,.62);
-      padding:18px;
-      box-sizing:border-box;
+    .meta{ color: rgba(215,227,244,.45); font-size: 12px; margin-left: 8px; }
+    .reactions{ display:inline-flex; gap:6px; margin-left:10px; flex-wrap:wrap; }
+    .react{
+      border:1px solid rgba(255,255,255,.10);
+      background:rgba(0,0,0,.18);
+      padding:2px 8px;
+      border-radius:999px;
+      font-size:12px;
+      color:var(--text);
+      cursor:pointer;
+      user-select:none;
     }
-    body.theme-light #lobby{ background:rgba(15, 25, 35, .45); }
+
+    .bar{
+      border:1px solid var(--border); border-radius:var(--radius); background:var(--panel);
+      padding:12px; display:grid; grid-template-columns: 1fr 130px; gap:12px;
+      backdrop-filter: blur(10px); box-shadow: var(--shadow);
+    }
+    input{
+      width:100%; padding:12px 12px; border-radius:12px; border:1px solid var(--border);
+      background:rgba(0,0,0,.22); color:var(--text); font-family:var(--mono); outline:none; box-sizing:border-box;
+    }
+    button{
+      padding:12px 12px; border-radius:12px; border:1px solid rgba(0,0,0,.2);
+      background:var(--accent); color:#061015; font-weight:900; cursor:pointer;
+    }
+    button:disabled{ opacity:.6; cursor:not-allowed; }
+
+    #lobby{ position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.60); padding:18px; box-sizing:border-box; z-index:3; }
     .card{
-      width:min(980px, 96vw);
-      border:1px solid var(--border);
-      border-radius:18px;
-      background:var(--panel);
-      box-shadow:0 24px 70px rgba(0,0,0,.35);
-      backdrop-filter: blur(12px);
-      overflow:hidden;
+      width:min(980px, 96vw); border:1px solid var(--border); border-radius:18px; background:rgba(255,255,255,.06);
+      overflow:hidden; backdrop-filter: blur(12px); box-shadow: var(--shadow);
     }
-    .card-head{
-      padding:16px 18px;
-      border-bottom:1px solid var(--border);
-      display:flex; align-items:center; justify-content:space-between; gap:12px;
-    }
-    .brandbox{ display:flex; align-items:center; gap:12px; }
-    .brandbox img{ width:54px; height:54px; border-radius:12px; }
-    .card-head .h1{ font-weight:1000; color:var(--accent); letter-spacing:.2px; }
-    .card-head .sub{ color:var(--muted); font-size:13px; }
-
-    .card-body{
-      display:grid;
-      grid-template-columns: 420px 1fr;
-      gap:14px;
-      padding:16px 18px;
-    }
-    .box{
-      border:1px solid var(--border);
-      border-radius:16px;
-      background:rgba(0,0,0,.08);
-      padding:12px 12px;
-    }
-    body.theme-light .box{ background:rgba(11,18,32,.03); }
-    .label{ color:var(--muted); font-size:12px; margin-bottom:8px; }
-    .row2{ display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
-    .nickrow input{
-      width:100%; padding:12px 12px;
-      font-family:var(--mono);
-      border-radius:12px;
-      border:1px solid var(--border);
-      background:rgba(0,0,0,.12);
-      color:var(--text);
-      outline:none;
-      box-sizing:border-box;
-    }
-    body.theme-light .nickrow input{ background:rgba(11,18,32,.04); }
-
-    #pwRow{ display:none; margin-top:10px; }
-
-    #nickErr{
-      margin-top:8px;
-      color:var(--danger);
-      font-size:12px;
-      display:none;
-    }
-    #nickState{
-      margin-top:8px;
-      color:var(--muted);
-      font-size:12px;
-      display:none;
-    }
-
-    .joinbtn{
-      padding:10px 12px;
-      border-radius:12px;
-      border:1px solid rgba(0,0,0,.2);
-      background:var(--accent);
-      color:var(--bg);
-      font-weight:900;
-      font-family:var(--mono);
-      cursor:pointer;
-      white-space:nowrap;
-    }
-    .joinbtn:disabled{ opacity:.55; cursor:not-allowed; }
-
-    select.sel{
-      padding:10px 10px;
-      border-radius:12px;
-      border:1px solid var(--border);
-      background:rgba(0,0,0,.12);
-      color:var(--text);
-      font-family:var(--mono);
-      outline:none;
-      box-sizing:border-box;
-      width: 100%;
-    }
-    body.theme-light select.sel{ background:rgba(11,18,32,.04); }
-
-    @media (max-width: 1000px){
-      .main{ grid-template-columns: 1fr; }
-      .status{ display:none; }
-      .brand{ min-width: unset; }
-      .card-body{ grid-template-columns: 1fr; }
-      .row2{ grid-template-columns: 1fr; }
-    }
+    .cardHead{ padding:14px 16px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; gap:12px; }
+    .cardBody{ padding:14px 16px; display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+    .err{ color:var(--danger); font-size:12px; display:none; margin-top:8px; }
+    .small{ color:var(--muted); font-size:12px; }
+    @media (max-width: 980px){ .main{ grid-template-columns: 1fr; } .cardBody{ grid-template-columns: 1fr; } }
   </style>
 </head>
-<body class="theme-cyber">
-  <div class="bg"></div>
-  <div class="wm"><img src="__LOGO_WATERMARK__" alt="HestioRooms watermark"/></div>
+<body>
+  <div class="wm"><img src="__LOGO_WATERMARK__" alt="wm"/></div>
 
-  <!-- Lobby -->
   <div id="lobby">
     <div class="card">
-      <div class="card-head">
-        <div class="brandbox">
-          <img src="__LOGO_DARK__" alt="HestioRooms logo"/>
+      <div class="cardHead">
+        <div class="brand">
+          <img src="__LOGO_DARK__" alt="logo"/>
           <div>
-            <div class="h1" id="lobbyTitle">HestioRooms Chat</div>
-            <div class="sub" id="lobbySub">Įvesk slapyvardį. Kol nick neužimtas – prisijungti negalima.</div>
+            <div><b>HestioRooms</b> <span class="small">Step 5 – SQLite + tools</span></div>
+            <div class="small">Kanalai, istorija, pin/edit/del/react</div>
           </div>
         </div>
-        <div class="sub" id="lobbyTag">for fun</div>
+        <div class="small">Vilnius time</div>
       </div>
+      <div class="cardBody">
+        <div class="panel" style="border-radius:16px;">
+          <div class="head"><span>Nick</span><span class="small">2–24</span></div>
+          <div style="padding:12px;">
+            <input id="nick" placeholder="pvz. Tomas" maxlength="24"/>
+            <div id="nickState" class="small" style="margin-top:10px;"></div>
+            
+<div class="label" style="margin-top:12px; display:none;" id="lblPw">Slaptažodis (tik admin)</div>
+<div class="nickrow" style="display:none;" id="pwRow">
+  <input id="pwPick" type="password" placeholder="slaptažodis" maxlength="64"/>
+</div>
 
-      <div class="card-body">
-        <div class="box">
-          <div class="label" id="lblNick">Slapyvardis</div>
-          <div class="nickrow">
-            <input id="nickPick" placeholder="pvz. admin" maxlength="24"/>
-          </div>
-
-          <div id="pwRow">
-            <div class="label" id="lblPw" style="margin-top:10px;">Admin slaptažodis</div>
-            <div class="nickrow">
-              <input id="pwPick" type="password" placeholder="••••••••" maxlength="80"/>
-            </div>
-          </div>
-
-          <div id="nickErr"></div>
-          <div id="nickState"></div>
-
-          <div class="row2" style="margin-top:12px;">
-            <div>
-              <div class="label" id="lblTheme">Tema</div>
-              <select id="themePick" class="sel">
-                <option value="theme-cyber">Cyber</option>
-                <option value="theme-glass">Glass</option>
-                <option value="theme-matrix">Matrix</option>
-                <option value="theme-crt">CRT</option>
-                <option value="theme-light">Light</option>
-              </select>
-            </div>
-            <div>
-              <div class="label" id="lblLang">Kalba</div>
-              <select id="langPick" class="sel">
-                <option value="lt">LT</option>
-                <option value="en">EN</option>
-              </select>
-            </div>
-          </div>
-
-          <div class="sub" style="margin-top:12px;" id="lobbyHint">
-            /help – komandos. /join #games – žaidimų kanalas.
+<div id="nickErr" class="err"></div>
           </div>
         </div>
-
-        <div class="box">
-          <div class="label" id="lblStart">Start</div>
-          <button id="joinBtn" class="joinbtn" disabled>Prisijungti</button>
-          <div class="sub" style="margin-top:12px;" id="lobbySaveHint">
-            Nick, tema ir kalba išsaugomi naršyklėje.
+        <div class="panel" style="border-radius:16px;">
+          <div class="head"><span>Start</span><span class="small">#main</span></div>
+          <div style="padding:12px;">
+            <button id="join" disabled style="width:100%;">Join</button>
+            <div class="small" style="margin-top:10px;">
+              Komandos: /help, /join #games, /pins, /edit, /del, /react
+            </div>
+            <div class="small" style="margin-top:6px;">
+              Tip: Alt+click ant žinutės #ID – greita reakcija.
+            </div>
           </div>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- App -->
-  <div class="app" id="app" style="display:none;">
-    <div class="topbar">
+  <div class="wrap" id="app" style="display:none;">
+    <div class="top">
       <div class="brand">
-        <div class="title">HestioRooms</div>
-        <div class="topic" id="topic">#main</div>
+        <img src="__LOGO_DARK__" alt="logo"/>
+        <b>HestioRooms</b>
+        <span class="topic" id="topic">#main</span>
       </div>
-
-      <div class="status">
-        <span class="pill">
-          <span id="connDot" class="dot"></span>
-          <span id="connText">Disconnected</span>
-        </span>
-      </div>
-
-      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-        <select id="langTop" class="sel" style="width:auto; min-width:86px;" title="Language">
-          <option value="lt">LT</option>
-          <option value="en">EN</option>
-        </select>
-        <select id="themeTop" class="sel" style="width:auto; min-width:150px;" title="Theme">
-          <option value="theme-cyber">Cyber</option>
-          <option value="theme-glass">Glass</option>
-          <option value="theme-matrix">Matrix</option>
-          <option value="theme-crt">CRT</option>
-          <option value="theme-light">Light</option>
-        </select>
-        <div class="pill" id="meNickPill" title="Me" style="min-width:160px; justify-content:center;"></div>
+      <div class="pill">
+        <span id="dot" class="dot"></span>
+        <span id="st">disconnected</span>
       </div>
     </div>
 
     <div class="main">
-      <!-- Left: Channels -->
-      <div class="panel" style="display:grid; grid-template-rows:auto auto 1fr; min-height:0;">
-        <div class="sidehead"><span id="roomsTitle">Kanalai</span><span>rooms</span></div>
-        <div class="search">
+      <div class="panel" style="display:grid; grid-template-rows:auto 1fr auto; min-height:0;">
+        <div class="head"><span>Kanalai</span><span class="small">click</span></div>
+        <div class="list" id="rooms"></div>
+        <div style="padding:10px 10px 12px 10px; border-top:1px solid var(--border);">
           <input id="roomJoin" placeholder="įrašyk #room ir Enter (pvz #games)" />
         </div>
-        <div class="list" id="rooms"></div>
       </div>
 
-      <!-- Center: Chat -->
-      <div class="panel center">
+      <div class="panel">
         <div id="log"></div>
       </div>
 
-      <!-- Right: Online -->
       <div class="panel" style="display:grid; grid-template-rows:auto 1fr; min-height:0;">
-        <div class="sidehead"><span><span id="onlineTitle">Online</span>: <b id="onlineCount">0</b></span><span>live</span></div>
+        <div class="head"><span>Online</span><span class="small" id="cnt">0</span></div>
         <div class="list" id="users"></div>
       </div>
     </div>
 
-    <div class="bottombar">
-      <input id="msg" placeholder="rašyk žinutę ir Enter..." maxlength="300"/>
-      <button id="btn">Siųsti</button>
+    <div class="bar">
+      <input id="msg" placeholder="rašyk žinutę..." maxlength="300" disabled/>
+      <button id="btn" disabled>Send</button>
     </div>
   </div>
 
 <script>
-  // ========= I18N client =========
-  const I18N = {
-    lt: {
-      lobbySub: "Įvesk slapyvardį. Kol nick neužimtas – prisijungti negalima.",
-      lblNick: "Slapyvardis",
-      lblPw: "Admin slaptažodis",
-      lblTheme: "Tema",
-      lblLang: "Kalba",
-      lobbyHint: "/help – komandos. /join #games – žaidimų kanalas.",
-      lblStart: "Start",
-      joinBtn: "Prisijungti",
-      lobbySaveHint: "Nick, tema ir kalba išsaugomi naršyklėje.",
-      roomsTitle: "Kanalai",
-      roomJoinPh: "įrašyk #room ir Enter (pvz #games)",
-      onlineTitle: "Online",
-      btnSend: "Siųsti",
-      msgPh: (room) => `rašyk į #${room} ir Enter... (komandos: /help)`,
-      connConnected: "Connected",
-      connDisconnected: "Disconnected",
-      nickInvalid: "Netinkamas nick. Reikia 2–24 simbolių (raidės/skaičiai/tarpas/_-.)",
-      nickChecking: "Tikrinama ar nick laisvas...",
-      nickFree: "Nick laisvas. Galite prisijungti.",
-      nickTaken: "Nick užimtas. Pasirink kitą.",
-      pwRequired: "Admin nick reikalauja slaptažodžio.",
-      pwBad: "Neteisingas slaptažodis.",
-      noConn: "nėra ryšio su serveriu."
-    },
-    en: {
-      lobbySub: "Enter a nickname. You cannot join until it is available.",
-      lblNick: "Nickname",
-      lblPw: "Admin password",
-      lblTheme: "Theme",
-      lblLang: "Language",
-      lobbyHint: "/help shows commands. /join #games opens the games channel.",
-      lblStart: "Start",
-      joinBtn: "Join",
-      lobbySaveHint: "Nick, theme and language are saved in your browser.",
-      roomsTitle: "Channels",
-      roomJoinPh: "type #room and Enter (e.g. #games)",
-      onlineTitle: "Online",
-      btnSend: "Send",
-      msgPh: (room) => `type in #${room} and Enter... (commands: /help)`,
-      connConnected: "Connected",
-      connDisconnected: "Disconnected",
-      nickInvalid: "Invalid nick. Use 2–24 chars (letters/numbers/space/_-.)",
-      nickChecking: "Checking nickname availability...",
-      nickFree: "Nick is available. You can join.",
-      nickTaken: "Nick is taken. Choose another.",
-      pwRequired: "Admin nickname requires a password.",
-      pwBad: "Wrong password.",
-      noConn: "no connection to server."
-    }
-  };
-
-  let UI_LANG = (localStorage.getItem("lang") || "lt").toLowerCase();
-  if(!I18N[UI_LANG]) UI_LANG = "lt";
-
-  function T(k){ return I18N[UI_LANG][k]; }
-
-  function applyLangToUI(){
-    document.documentElement.lang = UI_LANG;
-    document.getElementById("lobbySub").textContent = T("lobbySub");
-    document.getElementById("lblNick").textContent = T("lblNick");
-    document.getElementById("lblPw").textContent = T("lblPw");
-    document.getElementById("lblTheme").textContent = T("lblTheme");
-    document.getElementById("lblLang").textContent = T("lblLang");
-    document.getElementById("lobbyHint").textContent = T("lobbyHint");
-    document.getElementById("lblStart").textContent = T("lblStart");
-    document.getElementById("joinBtn").textContent = T("joinBtn");
-    document.getElementById("lobbySaveHint").textContent = T("lobbySaveHint");
-    document.getElementById("roomsTitle").textContent = T("roomsTitle");
-    document.getElementById("onlineTitle").textContent = T("onlineTitle");
-    document.getElementById("roomJoin").placeholder = T("roomJoinPh");
-    document.getElementById("btn").textContent = T("btnSend");
-  }
-
-  // ========= Elements =========
   const lobby = document.getElementById("lobby");
   const appEl = document.getElementById("app");
 
-  const nickPick = document.getElementById("nickPick");
+  const nickEl = document.getElementById("nick");
+  const joinBtn = document.getElementById("join");
+  const nickState = document.getElementById("nickState");
+  const nickErr = document.getElementById("nickErr");
+  const lblPw = document.getElementById("lblPw");
   const pwRow = document.getElementById("pwRow");
   const pwPick = document.getElementById("pwPick");
 
-  const nickErr  = document.getElementById("nickErr");
-  const nickState = document.getElementById("nickState");
-  const joinBtn = document.getElementById("joinBtn");
-
-  const themePick = document.getElementById("themePick");
-  const themeTop  = document.getElementById("themeTop");
-  const langPick  = document.getElementById("langPick");
-  const langTop   = document.getElementById("langTop");
-
-  const log = document.getElementById("log");
-  const msgEl = document.getElementById("msg");
-  const btn = document.getElementById("btn");
-
-  const topicEl = document.getElementById("topic");
-  const meNickPill = document.getElementById("meNickPill");
-
-  const connDot = document.getElementById("connDot");
-  const connText = document.getElementById("connText");
-
   const roomsEl = document.getElementById("rooms");
   const usersEl = document.getElementById("users");
-  const onlineCountEl = document.getElementById("onlineCount");
+  const cntEl = document.getElementById("cnt");
+  const topicEl = document.getElementById("topic");
+  const logEl = document.getElementById("log");
+
+  const msgEl = document.getElementById("msg");
+  const btn = document.getElementById("btn");
   const roomJoinEl = document.getElementById("roomJoin");
 
-  // ========= Theme + language =========
-  function setTheme(cls){
-    document.body.className = cls;
-    localStorage.setItem("theme", cls);
-    themePick.value = cls;
-    themeTop.value = cls;
-  }
+  const dot = document.getElementById("dot");
+  const st = document.getElementById("st");
 
-  function setLang(lang){
-    UI_LANG = (lang || "lt").toLowerCase();
-    if(!I18N[UI_LANG]) UI_LANG = "lt";
-    localStorage.setItem("lang", UI_LANG);
-    langPick.value = UI_LANG;
-    langTop.value = UI_LANG;
-    applyLangToUI();
-    // Update placeholder for current room
-    msgEl.placeholder = T("msgPh")(activeRoom || "main");
-    // Tell server if connected
-    if(ws && ws.readyState === WebSocket.OPEN){
-      wsSend({type:"say", room: activeRoom || "main", text:`/lang ${UI_LANG}`});
-    }
-    scheduleNickCheck();
-    setConn(ws && ws.readyState === WebSocket.OPEN);
-  }
-
-  themePick.addEventListener("change", () => setTheme(themePick.value));
-  themeTop.addEventListener("change", () => setTheme(themeTop.value));
-  langPick.addEventListener("change", () => setLang(langPick.value));
-  langTop.addEventListener("change", () => setLang(langTop.value));
-
-  function setConn(ok){
-    if(ok){
-      connDot.classList.add("ok");
-      connText.textContent = T("connConnected");
-    }else{
-      connDot.classList.remove("ok");
-      connText.textContent = T("connDisconnected");
-    }
-  }
-
-  function setNickError(text){
-    if(!text){
-      nickErr.style.display = "none";
-      nickErr.textContent = "";
-    }else{
-      nickErr.style.display = "block";
-      nickErr.textContent = text;
-    }
-  }
-  function setNickState(text){
-    if(!text){
-      nickState.style.display = "none";
-      nickState.textContent = "";
-    }else{
-      nickState.style.display = "block";
-      nickState.textContent = text;
-    }
-  }
-
-  function showLobby(show){
-    lobby.style.display = show ? "flex" : "none";
-    appEl.style.display = show ? "none" : "grid";
-    if(show) setTimeout(() => nickPick.focus(), 40);
-    else setTimeout(() => msgEl.focus(), 40);
-  }
-
-  function validateNick(n){
-    return /^[A-Za-z0-9ĄČĘĖĮŠŲŪŽąčęėįšųūž_\\-\\. ]{2,24}$/.test(n);
-  }
-
-  // ========= State =========
   let ws = null;
+  let connecting = false;
   let reconnectTimer = null;
-  let joinEstablished = false;
-  let fatalJoinError = false;
+  let reconnectDelay = 900;
+  const maxDelay = 8000;
+  let joinedOnce = false;
 
   let nick = "";
-  let pw = "";
-  let myNick = "";
-  let myColor = "#caffd9";
 
+  const roomState = new Map(); // roomKey -> {title, topic, unread, items:[]}
   let activeRoom = "main";
-  const rooms = new Map(); // room -> {title, topic, count}
-  const users = []; // current room users
-  const msgDom = new Map();
 
-  function esc(s){
-    if(s === null || s === undefined) s = "";
-    if(typeof s === "object"){
-      try{ s = JSON.stringify(s); }catch{ s = String(s); }
-    }else{
-      s = String(s);
-    }
-    return s
+  const msgDom = new Map(); // id -> element (for updates)
+
+  function isAdminNick(n){ return (n||"").trim().toLowerCase() === "admin"; }
+
+  function validateNick(n){
+    return /^[A-Za-z0-9ĄČĘĖĮŠŲŪŽąčęėįšųūž_\\-\\. ]{2,24}$/.test((n||"").trim());
+  }
+  
+function timeAgo(ts){
+  ts = Number(ts||0);
+  if(!ts) return "";
+  const now = Date.now()/1000;
+  const d = Math.max(0, now - ts);
+  if(d < 60) return `${Math.floor(d)}s`;
+  if(d < 3600) return `${Math.floor(d/60)}m`;
+  if(d < 86400) return `${Math.floor(d/3600)}h`;
+  return `${Math.floor(d/86400)}d`;
+}
+
+function esc(s){
+    return (s ?? "").toString()
       .replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")
       .replaceAll('"',"&quot;").replaceAll("'","&#39;");
   }
-
-  function clearLog(){
-    log.innerHTML = "";
-    msgDom.clear();
+  function setConn(ok){
+    if(ok){ dot.classList.add("ok"); st.textContent="connected"; }
+    else { dot.classList.remove("ok"); st.textContent="disconnected"; }
+  }
+  function showNickErr(text){
+    if(!text){ nickErr.style.display="none"; nickErr.textContent=""; }
+    else { nickErr.style.display="block"; nickErr.textContent=text; }
   }
 
-  function addLine(o){
-    const el = document.createElement("div");
-    el.className = "line";
+  function setPwVisible(on){
+    const v = !!on;
+    if(lblPw) lblPw.style.display = v ? "block" : "none";
+    if(pwRow) pwRow.style.display = v ? "block" : "none";
+    if(!v && pwPick) pwPick.value = "";
+  }
+
+
+
+  function renderReactions(reactions){
+    if(!reactions) return "";
+    const keys = Object.keys(reactions);
+    if(keys.length === 0) return "";
+    let html = `<span class="reactions">`;
+    for(const k of keys){
+      const n = (reactions[k] || []).length;
+      html += `<span class="react" data-emoji="${esc(k)}">${esc(k)} ${n}</span>`;
+    }
+    html += `</span>`;
+    return html;
+  }
+
+  function renderLine(o){
     const t = esc(o.t || "");
     const id = (o.id != null) ? Number(o.id) : null;
-    const idHtml = (id != null) ? `<span class="idTag">#${id}</span>` : `<span class="idTag"></span>`;
+    const idHtml = (id != null) ? `<span class="idTag" data-id="${id}">#${id}</span>` : `<span class="idTag"></span>`;
 
     if(o.type === "msg"){
-      el.innerHTML = `${idHtml}<span class="t">[${t}]</span> <span class="nick" style="color:${esc(o.color||'#caffd9')}">${esc(o.nick||'???')}</span>: <span class="msg">${esc(o.text||'')}</span>`;
-    }else{
-      el.innerHTML = `${idHtml}<span class="t">[${t}]</span> <span class="sys">${esc(o.text||'')}</span>`;
+      const edited = (o.extra && o.extra.edited) ? `<span class="meta">(edited)</span>` : "";
+      const reacts = renderReactions((o.extra && o.extra.reactions) ? o.extra.reactions : {});
+      return `<div class="line" ${id!=null ? `data-id="${id}"` : ""}>
+        ${idHtml}<span class="t">[${t}]</span> <span class="nick" style="color:${esc(o.color||'#d7e3f4')}">${esc(o.nick||'???')}</span>: ${esc(o.text||'')}${edited}${reacts}
+      </div>`;
     }
+    if(o.type === "deleted"){
+      return `<div class="line" ${id!=null ? `data-id="${id}"` : ""}>
+        ${idHtml}<span class="t">[${t}]</span> <span class="sys">[deleted]</span>
+      </div>`;
+    }
+    return `<div class="line" ${id!=null ? `data-id="${id}"` : ""}>
+      ${idHtml}<span class="t">[${t}]</span> <span class="sys">${esc(o.text||'')}</span>
+    </div>`;
+  }
 
-    log.appendChild(el);
-    log.scrollTop = log.scrollHeight;
+  function ensureRoom(room, title, topic, count, joined, last_ts, last_preview){
+    if(!roomState.has(room)){
+      roomState.set(room, {room, title:title||("#"+room), topic:topic||"", count: (count??0), unread:0, items:[]});
+    }else{
+      const r = roomState.get(room);
+      if(title) r.title = title;
+      if(topic!==undefined) r.topic = topic;
+      if(count!==undefined) r.count = count;
+      if(joined!==undefined) r.joined = joined;
+      if(last_ts!==undefined) r.last_ts = last_ts;
+      if(last_preview!==undefined) r.last_preview = last_preview;
+    }
+    return roomState.get(room);
   }
 
   function renderRooms(){
+    const rooms = Array.from(roomState.values());
+    rooms.sort((a,b)=>a.title.localeCompare(b.title, "lt"));
     roomsEl.innerHTML = "";
-    const arr = Array.from(rooms.entries()).map(([k,v]) => ({k, ...v}));
-    arr.sort((a,b) => a.title.localeCompare(b.title, UI_LANG));
-    for(const r of arr){
+    for(const r of rooms){
       const row = document.createElement("div");
-      row.className = "item" + (r.k === activeRoom ? " active" : "");
-      const topic = r.topic || "";
-      const cnt = (r.count == null) ? 0 : r.count;
+      row.className = "item" + (r.room === activeRoom ? " active" : "") + (r.joined ? " joined" : " notjoined");
+      const unread = r.unread || 0;
+      const cnt = (r.count ?? 0);
       row.innerHTML = `
         <div>
-          <div class="iname">${esc(r.title || ('#'+r.k))}</div>
-          <div class="idesc">${esc(topic)}</div>
+          <div class="iname">${esc(r.title)}</div>
+          <div class="idesc">${esc(r.topic || "")}</div>
         </div>
-        <div class="badge" title="users in channel">${cnt}</div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <div class="countpill" title="online">${cnt}</div>
+          <div class="badge" style="${unread>0 ? 'display:inline-flex;' : ''}">${unread}</div>
+        </div>
       `;
-      row.addEventListener("click", () => {
-        if(!ws || ws.readyState !== WebSocket.OPEN) return;
-        if(r.k === activeRoom) return;
-        wsSend({type:"join", room:r.k});
-      });
+      row.addEventListener("click", () => switchRoom(r.room));
       roomsEl.appendChild(row);
     }
   }
 
   function renderUsers(items){
-    onlineCountEl.textContent = String(items.length);
+    cntEl.textContent = String(items.length);
     usersEl.innerHTML = "";
     for(const u of items){
       const row = document.createElement("div");
       row.className = "item";
+      row.style.cursor = "default";
       row.innerHTML = `
         <div>
-          <div class="iname" style="color:${esc(u.color||'#caffd9')}">${esc(u.nick||'???')}</div>
-          <div class="idesc">${UI_LANG==='en' ? 'in this channel' : 'šiame kanale'}</div>
+          <div class="iname" style="color:${esc(u.color||'#d7e3f4')}">${esc(u.nick||'???')}</div>
+          <div class="idesc">online</div>
         </div>
         <div class="badge" style="display:none;"></div>
       `;
@@ -1802,314 +1275,386 @@ HTML = r"""<!doctype html>
     }
   }
 
-  function setActiveRoom(room){
-    activeRoom = room || "main";
-    topicEl.textContent = "#" + activeRoom;
-    msgEl.placeholder = T("msgPh")(activeRoom);
-    renderRooms();
-    clearLog();
+  function clearLog(){
+    logEl.innerHTML = "";
+    msgDom.clear();
   }
 
+  function addLineHTML(html){
+    const temp = document.createElement("div");
+    temp.innerHTML = html;
+    const el = temp.firstElementChild;
+    if(!el) return;
+    logEl.appendChild(el);
+
+    const id = el.getAttribute("data-id");
+    if(id){
+      const nid = Number(id);
+      msgDom.set(nid, el);
+
+      el.addEventListener("click", (ev) => {
+        if(!ev.altKey) return;
+        const emoji = prompt("Reakcija (pvz 😀):");
+        if(!emoji) return;
+        wsSend({type:"say", room: activeRoom, text: `/react ${nid} ${emoji}`});
+      });
+
+      el.addEventListener("click", (ev) => {
+        const tgt = ev.target;
+        if(!(tgt instanceof HTMLElement)) return;
+        if(!tgt.classList.contains("react")) return;
+        const em = tgt.getAttribute("data-emoji");
+        if(!em) return;
+        wsSend({type:"say", room: activeRoom, text: `/react ${nid} ${em}`});
+      });
+
+      const idTag = el.querySelector(".idTag");
+      if(idTag){
+        idTag.addEventListener("click", (ev2) => {
+          ev2.preventDefault();
+          ev2.stopPropagation();
+          wsSend({type:"say", room: activeRoom, text: `/quote ${nid}`});
+        });
+      }
+    }
+
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function renderActiveLog(){
+    const r = ensureRoom(activeRoom);
+    topicEl.textContent = "#" + activeRoom;
+    clearLog();
+    for(const it of r.items){
+      addLineHTML(renderLine(it));
+    }
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function appendToRoom(room, obj, noUnread=false){
+    const r = ensureRoom(room);
+    r.items.push(obj);
+    if(r.items.length > 320) r.items.splice(0, r.items.length - 320);
+    if(room !== activeRoom && !noUnread){
+      r.unread = (r.unread||0) + 1;
+    }
+    if(room === activeRoom){
+      addLineHTML(renderLine(obj));
+    }
+  }
+
+  function updateMessageInRoom(room, id, mutFn){
+    const r = ensureRoom(room);
+    const it = r.items.find(x => Number(x.id) === Number(id));
+    if(!it) return;
+    mutFn(it);
+
+    const el = msgDom.get(Number(id));
+    if(el){
+      const html = renderLine(it);
+      const tmp = document.createElement("div");
+      tmp.innerHTML = html;
+      const newEl = tmp.firstElementChild;
+      if(newEl){
+        el.replaceWith(newEl);
+        msgDom.set(Number(id), newEl);
+
+        newEl.addEventListener("click", (ev) => {
+          if(!ev.altKey) return;
+          const emoji = prompt("Reakcija (pvz 😀):");
+          if(!emoji) return;
+          wsSend({type:"say", room: activeRoom, text: `/react ${Number(id)} ${emoji}`});
+        });
+
+        newEl.addEventListener("click", (ev) => {
+          const tgt = ev.target;
+          if(!(tgt instanceof HTMLElement)) return;
+          if(!tgt.classList.contains("react")) return;
+          const em = tgt.getAttribute("data-emoji");
+          if(!em) return;
+          wsSend({type:"say", room: activeRoom, text: `/react ${Number(id)} ${em}`});
+        });
+
+        const idTag = newEl.querySelector(".idTag");
+        if(idTag){
+          idTag.addEventListener("click", (ev2) => {
+            ev2.preventDefault();
+            ev2.stopPropagation();
+            wsSend({type:"say", room: activeRoom, text: `/quote ${Number(id)}`});
+          });
+        }
+      }
+    }
+  }
+
+  async function checkNickNow(){
+    const n = (nickEl.value||"").trim();
+    setPwVisible((n||"").toLowerCase()==="admin");
+    joinBtn.disabled = true;
+    showNickErr("");
+    nickState.textContent = "";
+
+    if(!validateNick(n)){
+      showNickErr("Netinkamas nick (2–24, raidės/skaičiai/tarpas/_-.)");
+      return;
+    }
+
+    nickState.textContent = "Tikrinama...";
+    try{
+      const pw = (pwPick ? (pwPick.value||"").trim() : "");
+      const qs = new URLSearchParams({nick:n, pw}).toString();
+      const r = await fetch(`/check_nick?${qs}`, {cache:"no-store"});
+      const j = await r.json();
+      // Serveris grąžina needs_pw=true tik admin nick'ui
+      setPwVisible(!!j.needs_pw);
+      if(j.ok){
+        nickState.textContent = "Nick laisvas";
+        joinBtn.disabled = false;
+      }else{
+        joinBtn.disabled = true;
+        showNickErr(j.reason || "Nick užimtas");
+      }
+    }catch{
+      showNickErr("Nepavyko patikrinti nick");
+    }
+  }
+
+  let checkTimer=null;
+  function scheduleNickCheck(){
+    if(checkTimer) clearTimeout(checkTimer);
+    checkTimer = setTimeout(checkNickNow, 250);
+  }
+  nickEl.addEventListener("input", scheduleNickCheck);
+  if(pwPick) pwPick.addEventListener("input", scheduleNickCheck);
+  nickEl.addEventListener("keydown", (e)=>{ if(e.key==="Enter" && !joinBtn.disabled) joinBtn.click(); });
+
+  function wsUrl(){
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const pw = (pwPick ? (pwPick.value||"").trim() : "");
+    const qs = new URLSearchParams({nick, pw}).toString();
+    return `${proto}://${location.host}/ws?${qs}`;
+  }
+  function stopReconnect(){
+    if(reconnectTimer){ clearTimeout(reconnectTimer); reconnectTimer=null; }
+    reconnectDelay = 900;
+  }
+  function scheduleReconnect(){
+    if(reconnectTimer) return;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer=null;
+      connect();
+      reconnectDelay = Math.min(maxDelay, Math.floor(reconnectDelay*1.4));
+    }, reconnectDelay);
+  }
   function wsSend(obj){
     if(!ws || ws.readyState !== WebSocket.OPEN) return;
     ws.send(JSON.stringify(obj));
   }
 
-  function wsUrl(){
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    const qs = new URLSearchParams({ nick, pw, lang: UI_LANG }).toString();
-    return `${proto}://${location.host}/ws?${qs}`;
-  }
-
-  function stopReconnect(){
-    if(reconnectTimer){
-      clearInterval(reconnectTimer);
-      reconnectTimer = null;
-    }
-  }
-
   function connect(){
-    joinEstablished = false;
-    fatalJoinError = false;
-    setConn(false);
-
-    rooms.clear();
-    activeRoom = "main";
-    rooms.set("main", {title:"#main", topic:"Bendras kanalas", count:0});
-    renderRooms();
-    renderUsers([]);
-    setActiveRoom("main");
-
-    addLine({type:"sys", t: new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}), text: UI_LANG==='en' ? "connecting..." : "jungiamasi..."});
+    if(connecting) return;
+    connecting = true;
 
     ws = new WebSocket(wsUrl());
 
     ws.onopen = () => {
-      setConn(true);
+      connecting = false;
       stopReconnect();
-      // sync language on server side too
-      wsSend({type:"say", room:"main", text:`/lang ${UI_LANG}`});
+      setConn(true);
+      joinedOnce = true;
+      msgEl.disabled = false;
+      btn.disabled = false;
+      wsSend({type:"focus", room:activeRoom});
     };
 
     ws.onmessage = (ev) => {
-      let o = null;
-      try { o = JSON.parse(ev.data); } catch { return; }
+      let o=null;
+      try{ o = JSON.parse(ev.data); }catch{ return; }
 
       if(o.type === "ping"){
-        wsSend({type:"pong", t: Date.now()});
+        ws.send(JSON.stringify({type:"pong", t: Date.now()}));
         return;
       }
-
       if(o.type === "error"){
-        fatalJoinError = true;
-        stopReconnect();
+        appendToRoom(activeRoom, {type:"sys", t:o.t||"", text:o.text||"error"}, true);
+        showNickErr(o.text || "Join failed");
         try{ ws.close(); }catch{}
-        showLobby(true);
-
-        // show password field if needed
-        const code = o.code || "";
-        if(code === "PW_REQUIRED"){
-          pwRow.style.display = "block";
-          setNickError(T("pwRequired"));
-        }else if(code === "BAD_PASSWORD"){
-          pwRow.style.display = "block";
-          setNickError(T("pwBad"));
-        }else{
-          setNickError(o.text || (UI_LANG==='en' ? "Join failed." : "Prisijungti nepavyko."));
-        }
-        setNickState("");
-        joinBtn.disabled = true;
-        scheduleNickCheck();
         return;
       }
-
       if(o.type === "me"){
-        joinEstablished = true;
-        myNick = o.nick || "";
-        myColor = o.color || "#caffd9";
-        if(o.lang && (o.lang === "lt" || o.lang === "en")){
-          // if server decided different language, sync
-          setLang(o.lang);
-        }
-        meNickPill.innerHTML = `<b style="color:${esc(myColor)}">${esc(myNick)}</b>`;
         return;
       }
-
-      if(o.type === "lang"){
-        if(o.lang && (o.lang === "lt" || o.lang === "en")){
-          setLang(o.lang);
-        }
-        return;
-      }
-
       if(o.type === "rooms"){
-        rooms.clear();
         for(const it of (o.items || [])){
-          rooms.set(it.room, {title:it.title, topic:it.topic, count:it.count || 0});
+          ensureRoom(it.room, it.title, it.topic, it.count, it.joined, it.last_ts, it.last_preview);
         }
         renderRooms();
-        joinEstablished = true;
         return;
       }
-
       if(o.type === "topic"){
-        const room = o.room || activeRoom;
-        const r = rooms.get(room) || {title:"#"+room, topic:"", count:0};
-        if(o.title) r.title = String(o.title);
-        if(o.topic !== undefined && o.topic !== null){
-          r.topic = String(o.topic);
-        }else if(o.text){
-          // backward-compatible: server used to send "text" like "Title — Topic"
-          const raw = String(o.text);
-          const parts = raw.split("—");
-          if(parts.length >= 2){
-            r.title = parts[0].trim() || r.title;
-            r.topic = parts.slice(1).join("—").trim();
-          }else{
-            r.topic = raw;
-          }
+        const room = o.room || "main";
+        const r = ensureRoom(room);
+        const parts = (o.text || "").split("—");
+        if(parts.length >= 2){
+          r.topic = parts.slice(1).join("—").trim();
         }
-        rooms.set(room, r);
         renderRooms();
         return;
       }
-
       if(o.type === "users"){
-        // server gives items + also room counts within rooms event, but keep online list for active room
-        renderUsers(o.items || []);
-        return;
-      }
-
-      if(o.type === "joined"){
-        joinEstablished = true;
-        setActiveRoom(o.room || "main");
-        showLobby(false);
-        return;
-      }
-
-      if(o.type === "history"){
-        if(o.room && o.room !== activeRoom) return;
-        clearLog();
-        for(const it of (o.items || [])){
-          addLine({type: it.type || "msg", id: it.id, t: it.t, nick: it.nick, color: it.color, text: it.text});
+        const room = o.room || "main";
+        if(room === activeRoom){
+          renderUsers(o.items || []);
+          const rr = ensureRoom(room);
+          rr.count = (o.items || []).length;
+          renderRooms();
         }
         return;
       }
-
-      if(o.type === "msg" || o.type === "sys"){
-        if(o.room && o.room !== activeRoom) return;
-        addLine(o);
+      if(o.type === "history"){
+        const room = o.room || "main";
+        const r = ensureRoom(room);
+        r.items = [];
+        for(const it of (o.items || [])){
+          r.items.push({
+            id: it.id,
+            type: it.type,
+            t: it.t,
+            nick: it.nick,
+            color: it.color,
+            text: it.text,
+            extra: it.extra || {}
+          });
+        }
+        if(room === activeRoom){
+          renderActiveLog();
+        }
+        renderRooms();
         return;
       }
-
-      // ignore
+      if(o.type === "msg"){
+        const room = o.room || "main";
+        ensureRoom(room);
+        appendToRoom(room, {id:o.id, type:"msg", t:o.t, nick:o.nick, color:o.color, text:o.text, extra:o.extra||{}}, false);
+        renderRooms();
+        return;
+      }
+      if(o.type === "sys"){
+        const room = o.room || activeRoom;
+        appendToRoom(room, {id:o.id, type:"sys", t:o.t||"", text:o.text||""}, false);
+        return;
+      }
+      if(o.type === "pins"){
+        const room = o.room || activeRoom;
+        const ids = o.items || [];
+        const txt = ids.length ? ("Pins: " + ids.map(x => "#"+x).join(", ")) : "Pin’ų nėra.";
+        appendToRoom(room, {type:"sys", t:o.t||"", text: txt}, true);
+        return;
+      }
+      if(o.type === "quote"){
+        const id = o.id;
+        const nn = o.nick || "sys";
+        const tx = o.text || "";
+        msgEl.value = `> #${id} ${nn}: ${tx}\n`;
+        msgEl.focus();
+        return;
+      }
+      if(o.type === "edit"){
+        const room = o.room || activeRoom;
+        updateMessageInRoom(room, o.id, (it) => {
+          it.text = o.text;
+          it.type = "msg";
+          it.extra = o.extra || it.extra || {};
+          it.extra.edited = true;
+        });
+        return;
+      }
+      if(o.type === "delete"){
+        const room = o.room || activeRoom;
+        updateMessageInRoom(room, o.id, (it) => {
+          it.type = "deleted";
+          it.text = "";
+          it.extra = {deleted:true};
+        });
+        return;
+      }
+      if(o.type === "react_update"){
+        const room = o.room || activeRoom;
+        updateMessageInRoom(room, o.id, (it) => {
+          it.extra = it.extra || {};
+          it.extra.reactions = o.reactions || {};
+        });
+        return;
+      }
     };
 
     ws.onclose = () => {
+      connecting = false;
       setConn(false);
-      if(!joinEstablished){
-        stopReconnect();
-        showLobby(true);
-        if(!fatalJoinError){
-          setNickError(UI_LANG==='en'
-            ? "Could not connect. Check nickname and try again."
-            : "Prisijungti nepavyko. Patikrink nick ir bandyk dar kartą.");
-          scheduleNickCheck();
-        }
-        return;
-      }
-      if(fatalJoinError) return;
-
-      addLine({type:"sys", t: new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}), text: UI_LANG==='en' ? "connection lost, reconnect..." : "ryšys nutrūko, reconnect..."});
-      if(!reconnectTimer) reconnectTimer = setInterval(connect, 1500);
+      msgEl.disabled = true;
+      btn.disabled = true;
+      appendToRoom(activeRoom, {type:"sys", t:new Date().toLocaleTimeString(), text:"ryšys nutrūko, reconnecting..."}, false);
+      if(joinedOnce) scheduleReconnect();
     };
   }
 
-  // ========= Send =========
-  function send(){
-    const text = (msgEl.value || "").trim();
-    if(!text) return;
+  function switchRoom(room){
+    room = (room||"main").toString().replace(/^#/, "").toLowerCase();
+    if(!room) room = "main";
+    activeRoom = room;
+    const r = ensureRoom(room);
+    r.unread = 0;
+    renderRooms();
+    renderActiveLog();
+    wsSend({type:"focus", room});
+  }
 
+  function send(){
+    const text = (msgEl.value||"").trim();
+    if(!text) return;
     if(!ws || ws.readyState !== WebSocket.OPEN){
-      addLine({type:"sys", t: new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}), text: T("noConn")});
+      appendToRoom(activeRoom, {type:"sys", t:new Date().toLocaleTimeString(), text:"no connection"}, false);
       return;
     }
-
-    wsSend({type:"say", room:activeRoom, text});
-    msgEl.value = "";
+    wsSend({type:"say", room: activeRoom, text});
+    msgEl.value="";
   }
 
   btn.onclick = send;
-  msgEl.addEventListener("keydown", (e) => { if(e.key === "Enter") send(); });
+  msgEl.addEventListener("keydown", (e)=>{ if(e.key==="Enter") send(); });
 
   roomJoinEl.addEventListener("keydown", (e) => {
     if(e.key !== "Enter") return;
     const val = (roomJoinEl.value || "").trim();
     if(!val) return;
-    wsSend({type:"say", room:activeRoom, text:`/join ${val}`});
+    wsSend({type:"say", room: activeRoom, text: `/join ${val}`});
     roomJoinEl.value = "";
   });
 
-  // ========= Nick availability + admin pw =========
-  let checkTimer = null;
-  let nickAvailable = false;
-
-  async function checkNickAvailabilityNow(){
-    const n = (nickPick.value || "").trim();
-    nickAvailable = false;
-    joinBtn.disabled = true;
-
-    // Reset password row unless admin-ish
-    const isAdmin = (n || "").trim().toLowerCase() === "admin";
-    pwRow.style.display = isAdmin ? "block" : "none";
-    if(!isAdmin) pwPick.value = "";
-
-    if(!validateNick(n)){
-      setNickState("");
-      setNickError(T("nickInvalid"));
-      return;
-    }
-
-    setNickError("");
-    setNickState(T("nickChecking"));
-
-    try{
-      const pwv = (pwPick.value || "").trim();
-      const qs = new URLSearchParams({ nick: n, pw: pwv, lang: UI_LANG }).toString();
-      const r = await fetch(`/check_nick?${qs}`, { cache: "no-store" });
-      const j = await r.json();
-
-      if(j && j.needs_pw){
-        pwRow.style.display = "block";
-      }
-
-      if(j && j.ok){
-        nickAvailable = true;
-        setNickState(T("nickFree"));
-        setNickError("");
-        joinBtn.disabled = false;
-      }else{
-        nickAvailable = false;
-        setNickState("");
-        setNickError((j && j.reason) ? j.reason : T("nickTaken"));
-        joinBtn.disabled = true;
-      }
-    }catch{
-      nickAvailable = false;
-      setNickState("");
-      setNickError(UI_LANG==='en' ? "Server unreachable." : "Serveris nepasiekiamas.");
-      joinBtn.disabled = true;
-    }
-  }
-
-  function scheduleNickCheck(){
-    if(checkTimer) clearTimeout(checkTimer);
-    checkTimer = setTimeout(checkNickAvailabilityNow, 250);
-  }
-
-  nickPick.addEventListener("input", scheduleNickCheck);
-  pwPick.addEventListener("input", scheduleNickCheck);
-
-  nickPick.addEventListener("keydown", (e) => {
-    if(e.key === "Enter" && !joinBtn.disabled) joinBtn.click();
-  });
-  pwPick.addEventListener("keydown", (e) => {
-    if(e.key === "Enter" && !joinBtn.disabled) joinBtn.click();
-  });
-
   joinBtn.onclick = async () => {
-    await checkNickAvailabilityNow();
-    if(!nickAvailable) return;
+    await checkNickNow();
+    if(joinBtn.disabled) return;
 
-    nick = (nickPick.value || "").trim();
-    pw = (pwPick.value || "").trim();
+    nick = (nickEl.value||"").trim();
     localStorage.setItem("nick", nick);
 
-    showLobby(false);
+    lobby.style.display="none";
+    appEl.style.display="grid";
+
+    ensureRoom("main", "#main", "Bendras kanalas");
+    ensureRoom("games", "#games", "Žaidimai ir pramogos");
+    ensureRoom("help", "#help", "Pagalba / klausimai");
+    renderRooms();
+    switchRoom("main");
+
     connect();
+    setTimeout(()=>msgEl.focus(), 60);
   };
 
-  // Init
   (function init(){
-    const savedTheme = (localStorage.getItem("theme") || "theme-cyber").trim();
-    setTheme(savedTheme);
-
-    const savedNick = (localStorage.getItem("nick") || "").trim();
-    if(savedNick) nickPick.value = savedNick;
-
-    const savedLang = (localStorage.getItem("lang") || "lt").trim().toLowerCase();
-    if(I18N[savedLang]) UI_LANG = savedLang;
-
-    langPick.value = UI_LANG;
-    langTop.value = UI_LANG;
-    applyLangToUI();
-
-    themePick.value = savedTheme;
-    themeTop.value = savedTheme;
-
+    const saved = (localStorage.getItem("nick")||"").trim();
+    if(saved) nickEl.value = saved;
     scheduleNickCheck();
-    showLobby(true);
-    setConn(false);
   })();
 </script>
 </body>

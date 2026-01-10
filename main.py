@@ -23,9 +23,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 # ------------------------------------------------------------
 
 
-# VERSION: step24_fix_admin_room_delete_broadcast
+# VERSION: step25_clock_colors_watermark_rooms_sync
 APP_TITLE = "HestioRooms"
-APP_SUBTITLE = "Step 24 – Admin delete rooms refresh"
+APP_SUBTITLE = "Step 25 – Clock colors + stronger watermark + rooms sync"
 APP_TAGLINE = "Kanalai, istorija, pin/edit/del/react"
 
 app = FastAPI()
@@ -988,7 +988,11 @@ HTML = r"""<!doctype html>
     :root{
       --bg:#0b0f14; --panel:rgba(255,255,255,.06); --panel2:rgba(255,255,255,.05);
       --border:rgba(255,255,255,.13); --text:#d7e3f4; --muted:rgba(215,227,244,.58);
-      --accent:#7cff6b; --accent2:#6be4ff; --danger:#ff7a7a;
+      --accent:#7cff6b;
+      --tHour: #f5b24a;
+      --tMin:  #ff6aa6;
+      --tSec:  #b36cff;
+ --accent2:#6be4ff; --danger:#ff7a7a;
       --mono:ui-monospace, Menlo, Consolas, monospace; --radius:16px; --shadow:0 16px 44px rgba(0,0,0,.36);
     }
     html,body{height:100%;}
@@ -1003,9 +1007,9 @@ HTML = r"""<!doctype html>
     .wm{
       position:fixed; inset:0; pointer-events:none; z-index:0;
       display:flex; align-items:center; justify-content:center;
-      opacity:.08;
+      opacity:.12;
     }
-    .wm img{ width:min(760px, 78vw); height:auto; }
+    .wm img{ width:min(820px, 80vw); height:auto; }
     .wrap{ position:relative; z-index:1; height:100%; display:grid; grid-template-rows:auto 1fr auto; gap:12px; padding:14px; box-sizing:border-box; }
     .top{
       border:1px solid var(--border); border-radius:var(--radius); background:var(--panel);
@@ -1020,7 +1024,7 @@ HTML = r"""<!doctype html>
       border:1px solid rgba(70,255,170,.25);
       background:rgba(0,0,0,.14);
       border-radius:999px;
-      color:var(--accent);
+      /* color set per-part */
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
       font-weight:900;
       letter-spacing:.8px;
@@ -1039,6 +1043,10 @@ HTML = r"""<!doctype html>
     .panel{ min-height:0; border:1px solid var(--border); border-radius:var(--radius); background:var(--panel2); overflow:hidden; backdrop-filter: blur(10px); box-shadow: var(--shadow); }
     .chatPanel{ display:flex; flex-direction:column; min-height:0; }
 
+.vltime .tH{ color:var(--tHour); }
+.vltime .tM{ color:var(--tMin); }
+.vltime .tS{ color:var(--tSec); }
+.vltime .tSep{ color:rgba(255,255,255,.35); padding:0 2px; font-weight:800; }
     .head{ padding:10px 12px; border-bottom:1px solid var(--border); color:var(--muted); display:flex; justify-content:space-between; align-items:center; gap:10px; }
     .list{ padding:10px 10px 12px 10px; overflow:auto; min-height:0; }
     .item{
@@ -1361,8 +1369,15 @@ HTML = r"""<!doctype html>
 
     const tick = () => {
       const s = fmt.format(new Date());
-      if(elApp) elApp.textContent = s;
-      if(elLobby) elLobby.textContent = s;
+      const m = s.match(/(\d{2})\D?(\d{2})\D?(\d{2})/);
+      const hh = m ? m[1] : s;
+      const mm = m ? m[2] : "";
+      const ss = m ? m[3] : "";
+      const html = m
+        ? `<span class="tH">${hh}</span><span class="tSep">:</span><span class="tM">${mm}</span><span class="tSep">:</span><span class="tS">${ss}</span>`
+        : `${hh}`;
+      if(elApp) elApp.innerHTML = html;
+      if(elLobby) elLobby.innerHTML = html;
     };
     tick();
     setInterval(tick, 1000);
@@ -1890,8 +1905,18 @@ function renderUsers(items){
         return;
       }
       if(o.type === "rooms"){
-        for(const it of (o.items || [])){
+        const items = (o.items || []);
+        const seen = new Set(items.map(it => it.room));
+        for(const it of items){
           ensureRoom(it.room, it.title, it.topic, it.count, it.joined, it.last_ts, it.last_preview);
+        }
+
+        // Remove rooms that no longer exist (e.g., admin deleted). Keep joined rooms and DM/PM.
+        for(const k of Array.from(roomState.keys())){
+          const r0 = roomState.get(k);
+          if(!seen.has(k) && r0 && !r0.joined && !isDMRoom(k)){
+            roomState.delete(k);
+          }
         }
 
         // If we clicked an "available" channel, switch once join is confirmed.

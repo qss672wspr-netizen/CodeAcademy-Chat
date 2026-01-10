@@ -932,6 +932,12 @@ HTML = r"""<!doctype html>
     .item.active{ border-color: rgba(124,255,107,.28); background: rgba(124,255,107,.06); }
     .iname{ font-weight:900; font-size:13px; }
     .idesc{ color:var(--muted); font-size:11px; margin-top:2px; }
+    /* Online users list: compact layout */
+    #users .item{ padding:6px 10px; margin-bottom:4px; }
+    #users .urow{ display:flex; align-items:center; gap:6px; }
+    #users .meMark{ color:var(--accent); font-weight:900; }
+    #users .item.me{ border-color: rgba(124,255,107,.22); background: rgba(124,255,107,.05); }
+
     .badge{
       min-width:22px; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:900;
       color:var(--bg); background:var(--accent2); display:none; align-items:center; justify-content:center;
@@ -1309,12 +1315,15 @@ function esc(s){
     usersEl.innerHTML = "";
     for(const u of items){
       const row = document.createElement("div");
-      row.className = "item";
+      const uNick = String(u.nick||"");
+      const isMe = (uNick === nick);
+      row.className = "item" + (isMe ? " me" : "");
       row.style.cursor = "default";
+      const mark = isMe ? '<span class="meMark" title="Tu">★</span>' : "";
       row.innerHTML = `
-        <div>
-          <div class="iname" style="color:${esc(u.color||'#d7e3f4')}">${esc(u.nick||'???')}</div>
-          <div class="idesc">online</div>
+        <div class="urow">
+          ${mark}
+          <div class="iname" style="color:${esc(u.color||'#d7e3f4')}">${esc(uNick||'???')}</div>
         </div>
         <div class="badge" style="display:none;"></div>
       `;

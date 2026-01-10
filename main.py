@@ -1482,7 +1482,7 @@ function esc(s){
 
 
 function renderUsers(items){
-    cntEl.textContent = String(items.length);
+    // NOTE: cntEl (žalias skaičius) rodo bendrą online (global_count), todėl čia jo nekeičiam.
     usersEl.innerHTML = "";
     for(const u of items){
       const row = document.createElement("div");

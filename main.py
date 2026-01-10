@@ -1302,7 +1302,7 @@ HTML = r"""<!doctype html>
   function isAdminNick(n){ return (n||"").trim().toLowerCase() === "admin"; }
 
   function validateNick(n){
-    return /^[A-Za-z0-9ĄČĘĖĮŠŲŪŽąčęėįšųūž_\\-\\. ]{2,24}$/.test((n||"").trim());
+    return /^[A-Za-z0-9ĄČĘĖĮŠŲŪŽąčęėįšųūž_\.\- ]{2,24}$/.test((n||"").trim());
   }
   
 function timeAgo(ts){

@@ -1333,7 +1333,7 @@ HTML = r"""<!doctype html>
   position:absolute; inset:0;
   background-image:url('__LOGO_WATERMARK__');
   background-repeat:no-repeat;
-  background-position:center 55%;
+  background-position:center 70%;
   background-size:180%;
   opacity:.26;
   pointer-events:none;
@@ -1400,7 +1400,7 @@ HTML = r"""<!doctype html>
       background-image:url('__LOGO_WATERMARK__');
       background-repeat:no-repeat;
       background-position:center 55%;
-      background-size:160%;
+      background-size:85%;
       opacity:.22;
       pointer-events:none;
       filter:none;

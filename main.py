@@ -23,9 +23,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 # ------------------------------------------------------------
 
 
-# VERSION: step32_playlink_bright (2026-01-11)
+# VERSION: step33_dm_toast_stronger (2026-01-11)
 APP_TITLE = "HestioRooms"
-APP_SUBTITLE = "Step 32 – Play link brighter"
+APP_SUBTITLE = "Step 33 – Stronger DM toast"
 APP_TAGLINE = "Kanalai, istorija, pin/edit/del/react"
 
 app = FastAPI()
@@ -1182,21 +1182,34 @@ HTML = r"""<!doctype html>
       top:76px;
       left:50%;
       transform:translateX(-50%);
-      z-index:60;
+      z-index:9998;
       display:none;
-      padding:10px 12px;
-      border-radius:14px;
-      border:1px solid rgba(255,255,255,.16);
-      background:rgba(0,0,0,.35);
-      backdrop-filter: blur(10px);
-      box-shadow: var(--shadow);
-      max-width:min(520px, 92vw);
+      padding:12px 14px;
+      border-radius:16px;
+      border:1px solid rgba(110,255,200,.35);
+      background:rgba(0,0,0,.62);
+      backdrop-filter: blur(12px);
+      box-shadow: 0 10px 30px rgba(0,0,0,.45);
+      max-width:min(560px, 94vw);
       cursor:pointer;
       user-select:none;
     }
     .toast.show{ display:block; }
+    .toast .row{ display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+    .toast .x{
+      flex:0 0 auto;
+      border:1px solid rgba(255,255,255,.16);
+      background:rgba(255,255,255,.06);
+      color:rgba(235,245,255,.85);
+      border-radius:10px;
+      padding:2px 8px;
+      line-height:20px;
+      font-weight:900;
+      cursor:pointer;
+    }
+    .toast .x:hover{ background:rgba(255,255,255,.10); }
     .toast b{ color: var(--text); }
-    .toast .small{ color: rgba(215,227,244,.70); }
+    .toast .small{ color: rgba(215,227,244,.80); }
 
     
     .actions{ display:flex; align-items:center; gap:10px; }
@@ -1602,17 +1615,46 @@ HTML = r"""<!doctype html>
   function showDMToast(fromNick, room){
     if(!dmToastEl) return;
     if(dmToastTimer) { clearTimeout(dmToastTimer); dmToastTimer = null; }
+
+    const roomKey = String(room||"").replace(/^#/, "");
     const safeNick = esc(fromNick || "");
-    const safeRoom = esc("#"+String(room||"").replace(/^#/, ""));
-    dmToastEl.innerHTML = `<div><b>New DM</b> <span class="small">from</span> <b>${safeNick}</b> <span class="small">→</span> <span class="small">${safeRoom}</span></div><div class="small">Click to open</div>`;
+    const safeRoom = esc("#"+roomKey);
+
+    dmToastEl.innerHTML =
+      `<div class="row">
+         <div>
+           <div><b>New DM</b> <span class="small">from</span> <b>${safeNick}</b></div>
+           <div class="small">Click to open <span class="small">${safeRoom}</span></div>
+         </div>
+         <button class="x" title="Close" aria-label="Close">×</button>
+       </div>`;
+
+    dmToastEl.dataset.room = roomKey;
     dmToastEl.classList.add("show");
+
+    const closeBtn = dmToastEl.querySelector(".x");
+    if(closeBtn){
+      closeBtn.onclick = (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        dmToastEl.classList.remove("show");
+      };
+    }
+
     dmToastEl.onclick = (ev) => {
       ev.preventDefault();
+      const rk = dmToastEl.dataset.room || roomKey;
       dmToastEl.classList.remove("show");
-      switchRoom(room);
+      if(rk) focusRoom(rk);
     };
-    dmToastTimer = setTimeout(()=>{ dmToastEl.classList.remove("show"); }, 6500);
+
+    // Keep visible longer so it is hard to miss
+    dmToastTimer = setTimeout(() => {
+      dmToastEl.classList.remove("show");
+      dmToastTimer = null;
+    }, 20000);
   }
+
 
 // Users list: double click opens DM, right click opens context menu
 usersEl.addEventListener("dblclick", (e) => {

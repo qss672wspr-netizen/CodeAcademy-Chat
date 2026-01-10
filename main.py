@@ -23,9 +23,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 # ------------------------------------------------------------
 
 
-# VERSION: step22_prevent_leave_last_room (2026-01-10)
+# VERSION: step23_admin_delete_empty_rooms (2026-01-10)
 APP_TITLE = "HestioRooms"
-APP_SUBTITLE = "Step 22 – prevent leaving last joined channel"
+APP_SUBTITLE = "Step 23 – Admin delete empty rooms"
 APP_TAGLINE = "Kanalai, istorija, pin/edit/del/react"
 
 app = FastAPI()
@@ -419,6 +419,34 @@ async def leave_room(ws: WebSocket, room_key: str) -> Tuple[bool, str]:
     await broadcast_rooms_list_all()
     return True, "ok"
 
+async def admin_delete_room(ws: WebSocket, room_arg: str) -> Tuple[bool, str]:
+    """Admin: delete a non-default room if it is empty (0 online)."""
+    u = all_users_by_ws.get(ws)
+    if not u:
+        return False, "forbidden"
+    if not is_admin_nick(u.nick):
+        return False, "forbidden"
+    key = norm_room(room_arg)
+    if not key:
+        return False, "bad_room"
+    if key in DEFAULT_ROOMS:
+        return False, "default_room"
+    if key.startswith("dm_") or key.startswith("dm-") or key.startswith("pm_") or key.startswith("pm-"):
+        return False, "forbidden"
+    async with state_lock:
+        r = rooms.get(key)
+        if not r:
+            return False, "not_found"
+        if len(r.users) > 0:
+            return False, "not_empty"
+        del rooms[key]
+        try:
+            mark_rooms_dirty()
+        except Exception:
+            pass
+    return True, "ok"
+
+
 async def focus_room(ws: WebSocket, room_key: str) -> None:
     u = all_users_by_ws.get(ws)
     if not u:
@@ -674,6 +702,23 @@ async def handle_command(ws: WebSocket, u: User, active_room: str, text: str) ->
             await ws_send(ws, {"type": "sys", "t": ts(), "text": "Tu nesi šiame kanale."})
         else:
             await ws_send(ws, {"type": "sys", "t": ts(), "text": f"Palikai #{norm_room(arg)}."})
+        return True
+
+    if low.startswith("/roomdel ") or low.startswith("/room_delete ") or low.startswith("/roomdelete "):
+        arg = t0.split(" ", 1)[1].strip()
+        ok, code2 = await admin_delete_room(ws, arg)
+        if not ok and code2 == "forbidden":
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Šią komandą gali naudoti tik admin."})
+        elif not ok and code2 == "bad_room":
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Netinkamas kanalo pavadinimas."})
+        elif not ok and code2 == "default_room":
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Bazinių kanalų trinti negalima."})
+        elif not ok and code2 == "not_empty":
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Kanalo trinti negalima, kol jame yra žmonių (0 online reikalavimas)."})
+        elif not ok and code2 == "not_found":
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Kanalo rasti nepavyko."})
+        else:
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": f"Kanalas #{norm_room(arg)} ištrintas."})
         return True
 
     if low == "/who":
@@ -1031,6 +1076,14 @@ HTML = r"""<!doctype html>
     }
     .leaveBtn:hover{ border-color:rgba(255,255,255,0.18); color:var(--text); }
     .leaveBtn:disabled{ opacity:.35; cursor:not-allowed; }
+
+.delBtn{
+  width:26px; height:26px; border-radius:10px; border:1px solid rgba(239,68,68,.45);
+  background:rgba(239,68,68,.10); color:rgba(239,68,68,.95); font-weight:900; cursor:pointer;
+  display:flex; align-items:center; justify-content:center; line-height:1; padding:0;
+}
+.delBtn:hover{ background:rgba(239,68,68,.16); }
+.delBtn:disabled{ opacity:.35; cursor:not-allowed; }
     /* Online users list: compact layout */
     #users .item{ padding:6px 10px; margin-bottom:4px; }
     #users .urow{ display:flex; align-items:center; gap:6px; }
@@ -1313,6 +1366,12 @@ let ws = null;
     return /^((dm|pm)[_-])/i.test(r);
   }
 
+function isDefaultRoom(room){
+  const r = String(room || "");
+  return (r === "main" || r === "games" || r === "help");
+}
+
+
   function clearChannelRooms(){
     for(const [k, r] of roomState.entries()){
       if(isDMRoom(k)) continue;
@@ -1505,20 +1564,39 @@ function esc(s){
       row.className = "item notjoined";
 
       const cnt = (r.count ?? 0);
+      const amAdmin = isAdminNick(nick);
+      const canDelete = amAdmin && !isDefaultRoom(r.room) && cnt === 0;
+      const delTitle = amAdmin ? (canDelete ? "Trinti kanalą (admin)" : "Galima trinti tik kai 0 online") : "";
+      const delHtml = amAdmin ? `<button class="delBtn" title="${delTitle}" aria-label="Trinti" ${canDelete ? "" : "disabled"}>×</button>` : "";
+
       row.innerHTML = `
         <div>
           <div class="iname">${esc(r.title)}</div>
           <div class="idesc">${esc(r.topic || "")}</div>
         </div>
         <div style="display:flex; gap:8px; align-items:center;">
+          ${delHtml}
           <div class="countpill" title="online">${cnt}</div>
         </div>
       `;
 
-      row.addEventListener("click", () => {
+      row.addEventListener("click", (ev) => {
+        const tgt = ev.target;
+        if(tgt instanceof HTMLElement && tgt.closest(".delBtn")) return;
         pendingJoinRoom = r.room;
         wsSend({type:"say", room: activeRoom, text: `/join #${r.room}`});
       });
+
+      {
+        const btn = row.querySelector(".delBtn");
+        if(btn && !btn.disabled){
+          btn.addEventListener("click", (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            wsSend({type:"say", room: activeRoom, text: `/roomdel #${r.room}`});
+          });
+        }
+      }
 
       roomsAvailEl.appendChild(row);
     }

@@ -23,9 +23,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 # ------------------------------------------------------------
 
 
-# VERSION: step26_context_menu_mute_watermark
+# VERSION: step28_dm_delivery_single_watermark
 APP_TITLE = "HestioRooms"
-APP_SUBTITLE = "Step 26 – Context menu MVP + DM dblclick + mute + watermark"
+APP_SUBTITLE = "Step 28 – DM delivery + single watermark + clock colors"
 APP_TAGLINE = "Kanalai, istorija, pin/edit/del/react"
 
 app = FastAPI()
@@ -285,6 +285,66 @@ async def cmd_mute(ws: WebSocket, u: User, target_nick: str, minutes: int) -> Tu
     if tws:
         await ws_send(tws, {"type": "sys", "t": ts(), "text": f'Tu užtildytas {minutes} min.'})
     return True, "ok"
+
+
+
+# ----------------- DM delivery helpers -----------------
+SAFE_NICK_RE = re.compile(r"[^a-z0-9_\-\.]")
+
+def nick_safe(n: str) -> str:
+    # Casefold + remove unexpected chars (should already be safe due to valid_nick).
+    return SAFE_NICK_RE.sub("", (n or "").casefold())
+
+def is_dm_key(key: str) -> bool:
+    return key.startswith("dm_") or key.startswith("dm-") or key.startswith("pm_") or key.startswith("pm-")
+
+def dm_other_cf(room_key: str, sender_nick: str) -> Optional[str]:
+    key = norm_room(room_key)
+    if not is_dm_key(key):
+        return None
+    for pref in ("dm_", "pm_", "dm-", "pm-"):
+        if key.startswith(pref):
+            rest = key[len(pref):]
+            break
+    else:
+        return None
+
+    sender = nick_safe(sender_nick)
+
+    # Try all split positions; pick the one that contains the sender.
+    for sep in ("_", "-"):
+        if sep not in rest:
+            continue
+        for i, ch in enumerate(rest):
+            if ch != sep:
+                continue
+            a = rest[:i]
+            b = rest[i+1:]
+            if not a or not b:
+                continue
+            if a == sender:
+                return b
+            if b == sender:
+                return a
+    return None
+
+async def ensure_dm_recipient_joined(room_key: str, sender_ws: WebSocket) -> None:
+    u = all_users_by_ws.get(sender_ws)
+    if not u:
+        return
+    other_cf = dm_other_cf(room_key, u.nick)
+    if not other_cf:
+        return
+
+    async with state_lock:
+        other_ws = all_ws_by_nick_cf.get(other_cf)
+        if not other_ws:
+            return
+        other_u = all_users_by_ws.get(other_ws)
+        need_join = bool(other_u) and (room_key not in other_u.rooms)
+
+    if need_join:
+        await join_room(other_ws, room_key)
 
 
 def ensure_room(room_key: str) -> Room:
@@ -1015,6 +1075,15 @@ async def ws_endpoint(ws: WebSocket):
                     if handled:
                         continue
 
+
+                # DM: ensure recipient is joined so message is delivered and appears as unread.
+                if is_dm_key(room_key):
+                    async with state_lock:
+                        sender_needs_join = room_key not in u.rooms
+                    if sender_needs_join:
+                        await join_room(ws, room_key)
+                    await ensure_dm_recipient_joined(room_key, ws)
+
                 extra = {"created_at": time.time(), "edited": False, "reactions": {}}
                 msg_id = await db_insert_message(room_key, "msg", ts(), u.nick, u.color, text[:300], extra)
                 update_room_activity(room_key, text)
@@ -1059,14 +1128,8 @@ HTML = r"""<!doctype html>
         radial-gradient(900px 520px at 80% 35%, rgba(107,228,255,.12), transparent 60%),
         linear-gradient(180deg, rgba(0,0,0,.40), rgba(0,0,0,.58)), var(--bg);
     }
-    /* Watermark logo */
-    .wm{
-      position:fixed; inset:0; pointer-events:none; z-index:0;
-      display:flex; align-items:center; justify-content:center;
-      opacity:.20;
-    }
-    .wm img{ width:min(980px, 92vw); height:auto; }
-    .wrap{ position:relative; z-index:1; height:100%; display:grid; grid-template-rows:auto 1fr auto; gap:12px; padding:14px; box-sizing:border-box; }
+    /* Watermark logo removed (moved to #log watermark) */
+.wrap{ position:relative; z-index:1; height:100%; display:grid; grid-template-rows:auto 1fr auto; gap:12px; padding:14px; box-sizing:border-box; }
     .top{
       border:1px solid var(--border); border-radius:var(--radius); background:var(--panel);
       padding:12px 14px; display:flex; justify-content:space-between; align-items:center; gap:12px;
@@ -1229,9 +1292,9 @@ HTML = r"""<!doctype html>
   position:absolute; inset:0;
   background-image:url('__LOGO_WATERMARK__');
   background-repeat:no-repeat;
-  background-position:center 55%;
-  background-size:70%;
-  opacity:.22;
+  background-position:center 60%;
+  background-size:92%;
+  opacity:.26;
   pointer-events:none;
   filter:none;
 }
@@ -1334,7 +1397,6 @@ HTML = r"""<!doctype html>
 </style>
 </head>
 <body>
-  <div class="wm"><img src="__LOGO_WATERMARK__" alt="wm"/></div>
   <div id="ctxMenu" class="ctx hidden" role="menu" aria-hidden="true"></div>
 
   <div id="lobby">

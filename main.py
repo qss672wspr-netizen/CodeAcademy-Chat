@@ -23,9 +23,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 # ------------------------------------------------------------
 
 
-# VERSION: step29_dm_toast_playlink_watermarks
+# VERSION: step32_playlink_bright (2026-01-11)
 APP_TITLE = "HestioRooms"
-APP_SUBTITLE = "Step 29 – DM toast + Play link + watermarks"
+APP_SUBTITLE = "Step 32 – Play link brighter"
 APP_TAGLINE = "Kanalai, istorija, pin/edit/del/react"
 
 app = FastAPI()
@@ -1141,19 +1141,41 @@ HTML = r"""<!doctype html>
 
     .top .actions{ margin-left:auto; }
     .playLink{
-      margin:0 auto;
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      padding:6px 10px;
-      border-radius:14px;
-      border:1px solid rgba(255,255,255,.12);
-      background:rgba(0,0,0,.18);
-      cursor:pointer;
-      user-select:none;
-    }
-    .playLink:hover{ border-color: rgba(255,255,255,.22); background:rgba(0,0,0,.22); }
-    .playLink img{ height:28px; width:auto; display:block; }
+  margin:0 auto;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  padding:7px 12px;
+  border-radius:14px;
+  border:1px solid var(--border);
+  background:rgba(255,255,255,.04);
+  box-shadow:0 10px 28px rgba(0,0,0,.22);
+  cursor:pointer;
+  user-select:none;
+}
+.playLink:hover{
+  border-color: rgba(255,255,255,.26);
+  background:rgba(255,255,255,.06);
+}
+.playLink img{
+  height:34px;
+  width:auto;
+  display:block;
+  filter: brightness(1.22) saturate(1.18);
+}
+.playLink .playText{
+  font-weight:900;
+  letter-spacing:.35px;
+  font-size:16px;
+  line-height:1;
+  background: linear-gradient(90deg, #f6b14a, #ff6aa7, #b36cff);
+  -webkit-background-clip:text;
+  background-clip:text;
+  color:transparent;
+  text-shadow: 0 0 18px rgba(255,255,255,.08);
+  white-space:nowrap;
+}
 
     .toast{
       position:fixed;
@@ -1501,6 +1523,7 @@ HTML = r"""<!doctype html>
       </div>
       <a id="playLink" class="playLink" href="#" title="HestioPlay">
         <img src="__PLAY_LOGO__" alt="HestioPlay"/>
+        <span class="playText">HestioPlay</span>
       </a>
       <div class="actions">
         <div id="vilniusTime" class="vltime" title="Laikas">--:--:--</div>

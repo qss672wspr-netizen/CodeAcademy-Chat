@@ -23,9 +23,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 # ------------------------------------------------------------
 
 
-# VERSION: step19_clock_time_only (2026-01-10)
+# VERSION: step21_leave_main_session (2026-01-10)
 APP_TITLE = "HestioRooms"
-APP_SUBTITLE = "Step 19 – clock + cleaner lobby"
+APP_SUBTITLE = "Step 21 – leave #main (session) enabled"
 APP_TAGLINE = "Kanalai, istorija, pin/edit/del/react"
 
 app = FastAPI()
@@ -393,19 +393,26 @@ async def leave_room(ws: WebSocket, room_key: str) -> Tuple[bool, str]:
         return False, "no_user"
 
     key = norm_room(room_key)
-    if key == "main":
-        return False, "deny_main"
 
     async with state_lock:
         if key not in u.rooms:
             return False, "not_member"
+
+        # Leisk išeiti iš #main, bet palik bent vieną prisijungtą kanalą šiai sesijai.
+        if key == "main" and len(u.rooms) <= 1:
+            return False, "deny_last_room"
+
         u.rooms.discard(key)
         r = ensure_room(key)
         r.clients.discard(ws)
         r.users.pop(ws, None)
 
         if u.active_room == key:
-            u.active_room = "main"
+            # Parenkame naują aktyvų kanalą iš likusių prisijungtų.
+            if "main" in u.rooms:
+                u.active_room = "main"
+            else:
+                u.active_room = sorted(u.rooms)[0] if u.rooms else "main"
 
     await send_rooms_list(ws)
     await broadcast_userlist(key)
@@ -661,8 +668,8 @@ async def handle_command(ws: WebSocket, u: User, active_room: str, text: str) ->
     if low.startswith("/leave "):
         arg = t0.split(" ", 1)[1].strip()
         ok, code = await leave_room(ws, arg)
-        if not ok and code == "deny_main":
-            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Iš #main išeiti negalima."})
+        if not ok and code == "deny_last_room":
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Negali palikti paskutinio kanalo. Prisijunk prie kito kanalo ir bandyk dar kartą."})
         elif not ok and code == "not_member":
             await ws_send(ws, {"type": "sys", "t": ts(), "text": "Tu nesi šiame kanale."})
         else:
@@ -1023,6 +1030,7 @@ HTML = r"""<!doctype html>
       display:inline-flex; align-items:center; justify-content:center; padding:0; line-height:1;
     }
     .leaveBtn:hover{ border-color:rgba(255,255,255,0.18); color:var(--text); }
+    .leaveBtn:disabled{ opacity:.35; cursor:not-allowed; }
     /* Online users list: compact layout */
     #users .item{ padding:6px 10px; margin-bottom:4px; }
     #users .urow{ display:flex; align-items:center; gap:6px; }
@@ -1454,8 +1462,11 @@ function esc(s){
 
       const unread = r.unread || 0;
       const cnt = (r.count ?? 0);
-      const canLeave = (r.room !== "main");
-      const leaveHtml = canLeave ? `<button class="leaveBtn" title="Išeiti" aria-label="Išeiti">×</button>` : "";
+      const isMain = (r.room === "main");
+      const leaveDisabled = (isMain && mine.length <= 1);
+      const leaveTitle = leaveDisabled ? "Prisijunk prie kito kanalo, kad galėtum išeiti iš #main" : "Išeiti";
+      const leaveHtml = `<button class="leaveBtn" title="${leaveTitle}" aria-label="Išeiti" ${leaveDisabled ? "disabled" : ""}>×</button>`;
+
 
       row.innerHTML = `
         <div>
@@ -1475,9 +1486,9 @@ function esc(s){
         switchRoom(r.room);
       });
 
-      if(canLeave){
+      {
         const btn = row.querySelector(".leaveBtn");
-        if(btn){
+        if(btn && !btn.disabled){
           btn.addEventListener("click", (ev) => {
             ev.preventDefault();
             ev.stopPropagation();

@@ -23,9 +23,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 # ------------------------------------------------------------
 
 
-# VERSION: step16_online_total_and_channel_count (2026-01-10)
+# VERSION: step18_vilnius_clock_no_commands (2026-01-10)
 APP_TITLE = "HestioRooms"
-APP_SUBTITLE = "Step 16 – Online total + channel list"
+APP_SUBTITLE = "Step 18 – Vilnius clock + cleaner lobby"
 APP_TAGLINE = "Kanalai, istorija, pin/edit/del/react"
 
 app = FastAPI()
@@ -934,6 +934,20 @@ HTML = r"""<!doctype html>
     }
     
     .actions{ display:flex; align-items:center; gap:10px; }
+    .vltime{
+      display:inline-flex; align-items:center;
+      padding:6px 10px;
+      border:1px solid rgba(70,255,170,.25);
+      background:rgba(0,0,0,.14);
+      border-radius:999px;
+      color:var(--accent);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-weight:900;
+      letter-spacing:.8px;
+      font-variant-numeric: tabular-nums;
+      text-transform: none;
+      box-shadow: 0 10px 25px rgba(0,0,0,.25);
+    }
 .brand{ display:flex; gap:12px; align-items:center; }
     .brand img{ width:38px; height:38px; border-radius:10px; box-shadow:0 10px 30px rgba(0,0,0,.35); }
     .brand b{ color:var(--accent); letter-spacing:.4px; }
@@ -1156,9 +1170,6 @@ HTML = r"""<!doctype html>
           <div class="head"><span>Start</span><span class="small">#main</span></div>
           <div style="padding:12px;">
             <button id="join" disabled style="width:100%;">Join</button>
-            <div class="small" style="margin-top:10px;">
-              Komandos: /help, /join #games, /pins, /edit, /del, /react
-            </div>
             <div class="small" style="margin-top:6px;">
               Tip: Alt+click ant žinutės #ID – greita reakcija.
             </div>
@@ -1176,6 +1187,7 @@ HTML = r"""<!doctype html>
         <span class="topic" id="topic">#main</span>
       </div>
       <div class="actions">
+        <div id="vilniusTime" class="vltime" title="Vilniaus laikas">Vilnius --:--:--</div>
         <div class="pill">
           <span id="dot" class="dot"></span>
           <span id="st">disconnected</span>
@@ -1246,6 +1258,25 @@ HTML = r"""<!doctype html>
   const dot = document.getElementById("dot");
   const st = document.getElementById("st");
   const logoutBtn = document.getElementById("logout");
+  const vilniusTimeEl = document.getElementById("vilniusTime");
+
+  // Vilnius clock (Europe/Vilnius)
+  function startVilniusClock(){
+    if(!vilniusTimeEl) return;
+    const fmt = new Intl.DateTimeFormat("lt-LT", {
+      timeZone: "Europe/Vilnius",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    const tick = () => {
+      vilniusTimeEl.textContent = "Vilnius " + fmt.format(new Date());
+    };
+    tick();
+    setInterval(tick, 1000);
+  }
+  startVilniusClock();
+
 
   let ws = null;
   let connecting = false;

@@ -1168,6 +1168,30 @@ HTML = r"""<!doctype html>
 
   const msgDom = new Map(); // id -> element (for updates)
 
+  // Client-side policy:
+  // - Channel rooms: do not auto-load history on join/reconnect (start with a clean slate)
+  // - DM rooms: keep history
+  const allowNextHistory = new Set(); // allow the next "history" payload for this room (manual /history)
+  function isDMRoom(room){
+    const r = String(room || "");
+    return /^((dm|pm)[_-])/i.test(r);
+  }
+
+  function clearChannelRooms(){
+    for(const [k, r] of roomState.entries()){
+      if(isDMRoom(k)) continue;
+      // drop DOM refs for messages in this room (avoid stale pointers)
+      for(const it of (r.items || [])){
+        if(it && it.id !== undefined) msgDom.delete(Number(it.id));
+      }
+      r.items = [];
+      r.unread = 0;
+      r.seq = 0;
+      r.id2seq = new Map();
+    }
+  }
+
+
   function isAdminNick(n){ return (n||"").trim().toLowerCase() === "admin"; }
 
   function validateNick(n){
@@ -1541,6 +1565,13 @@ function esc(s){
       joinedOnce = true;
       msgEl.disabled = false;
       btn.disabled = false;
+      // On every (re)connect start channels as a clean slate, but keep DM history.
+      allowNextHistory.clear();
+      clearChannelRooms();
+      if(!isDMRoom(activeRoom)){
+        // ensure the UI reflects the clean slate immediately
+        renderActiveLog();
+      }
       wsSend({type:"focus", room:activeRoom});
     };
 
@@ -1590,6 +1621,12 @@ function esc(s){
       }
       if(o.type === "history"){
         const room = o.room || "main";
+        const isDM = isDMRoom(room);
+        if(!isDM && !allowNextHistory.has(room)){
+          // ignore automatic history for channels
+          return;
+        }
+        if(allowNextHistory.has(room)) allowNextHistory.delete(room);
         const r = ensureRoom(room);
         r.items = [];
         for(const it of (o.items || [])){
@@ -1690,6 +1727,10 @@ function esc(s){
   function send(){
     const text = (msgEl.value||"").trim();
     if(!text) return;
+    // allow manual history load in channels
+    if(/^\/history\b/i.test(text)){
+      allowNextHistory.add(activeRoom);
+    }
     if(!ws || ws.readyState !== WebSocket.OPEN){
       appendToRoom(activeRoom, {type:"sys", t:new Date().toLocaleTimeString(), text:"no connection"}, false);
       return;

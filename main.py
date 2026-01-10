@@ -23,9 +23,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 # ------------------------------------------------------------
 
 
-# VERSION: step21_leave_main_session (2026-01-10)
+# VERSION: step22_prevent_leave_last_room (2026-01-10)
 APP_TITLE = "HestioRooms"
-APP_SUBTITLE = "Step 21 – leave #main (session) enabled"
+APP_SUBTITLE = "Step 22 – prevent leaving last joined channel"
 APP_TAGLINE = "Kanalai, istorija, pin/edit/del/react"
 
 app = FastAPI()
@@ -398,8 +398,8 @@ async def leave_room(ws: WebSocket, room_key: str) -> Tuple[bool, str]:
         if key not in u.rooms:
             return False, "not_member"
 
-        # Leisk išeiti iš #main, bet palik bent vieną prisijungtą kanalą šiai sesijai.
-        if key == "main" and len(u.rooms) <= 1:
+        # Leisk išeiti iš bet kurio kanalo, bet palik bent vieną prisijungtą kanalą šiai sesijai.
+        if len(u.rooms) <= 1:
             return False, "deny_last_room"
 
         u.rooms.discard(key)
@@ -1463,8 +1463,8 @@ function esc(s){
       const unread = r.unread || 0;
       const cnt = (r.count ?? 0);
       const isMain = (r.room === "main");
-      const leaveDisabled = (isMain && mine.length <= 1);
-      const leaveTitle = leaveDisabled ? "Prisijunk prie kito kanalo, kad galėtum išeiti iš #main" : "Išeiti";
+      const leaveDisabled = (mine.length <= 1);
+      const leaveTitle = leaveDisabled ? (isMain ? "Prisijunk prie kito kanalo, kad galėtum išeiti iš #main" : "Prisijunk prie kito kanalo, kad galėtum išeiti") : "Išeiti";
       const leaveHtml = `<button class="leaveBtn" title="${leaveTitle}" aria-label="Išeiti" ${leaveDisabled ? "disabled" : ""}>×</button>`;
 
 

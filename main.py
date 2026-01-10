@@ -501,7 +501,7 @@ async def focus_room(ws: WebSocket, room_key: str) -> None:
 
     u.active_room = key
     r = ensure_room(key)
-    await ws_send(ws, {"type": "topic", "room": key, "t": ts(), "text": f"{r.title} — {r.topic}"})
+    await ws_send(ws, {"type": "topic", "room": key, "t": ts(), "title": r.title, "topic": r.topic})
     await ws_send(ws, {"type": "users", "room": key, "t": ts(), "items": room_userlist(key)})
     hist = await db_load_history(key, JOIN_HISTORY_DEFAULT)
     await ws_send(ws, {"type": "history", "room": key, "t": ts(), "items": hist})
@@ -573,7 +573,7 @@ async def cmd_topic(ws: WebSocket, room_key: str, arg: Optional[str]) -> None:
     r.topic = new_topic
     msg_id = await db_insert_message(room_key, "sys", ts(), None, None, f"Tema pakeista: {new_topic}", {"kind": "topic"})
     update_room_activity(room_key, f"[topic] {new_topic}")
-    await room_broadcast(room_key, {"type": "topic", "room": room_key, "t": ts(), "text": f"{r.title} — {r.topic}"})
+    await room_broadcast(room_key, {"type": "topic", "room": room_key, "t": ts(), "title": r.title, "topic": r.topic})
     await room_broadcast(room_key, {"type": "sys", "room": room_key, "t": ts(), "id": msg_id, "text": f"Tema pakeista: {new_topic}"})
     for w in list(r.clients):
         await send_rooms_list(w)
@@ -1727,7 +1727,13 @@ HTML = r"""<!doctype html>
   const msgDom = new Map();
 
   function esc(s){
-    return (s ?? "").toString()
+    if(s === null || s === undefined) s = "";
+    if(typeof s === "object"){
+      try{ s = JSON.stringify(s); }catch{ s = String(s); }
+    }else{
+      s = String(s);
+    }
+    return s
       .replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")
       .replaceAll('"',"&quot;").replaceAll("'","&#39;");
   }
@@ -1909,11 +1915,21 @@ HTML = r"""<!doctype html>
       if(o.type === "topic"){
         const room = o.room || activeRoom;
         const r = rooms.get(room) || {title:"#"+room, topic:"", count:0};
-        r.topic = o.topic || "";
-        rooms.set(room, r);
-        if(room === activeRoom){
-          // nothing else
+        if(o.title) r.title = String(o.title);
+        if(o.topic !== undefined && o.topic !== null){
+          r.topic = String(o.topic);
+        }else if(o.text){
+          // backward-compatible: server used to send "text" like "Title — Topic"
+          const raw = String(o.text);
+          const parts = raw.split("—");
+          if(parts.length >= 2){
+            r.title = parts[0].trim() || r.title;
+            r.topic = parts.slice(1).join("—").trim();
+          }else{
+            r.topic = raw;
+          }
         }
+        rooms.set(room, r);
         renderRooms();
         return;
       }

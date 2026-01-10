@@ -1149,7 +1149,7 @@ HTML = r"""<!doctype html>
             <div class="small">__APP_TAGLINE__</div>
           </div>
         </div>
-        <div class="small">Vilnius time</div>
+        <div id="vilniusTimeLobby" class="vltime" title="Vilniaus laikas">Vilnius --:--:--</div>
       </div>
       <div class="cardBody">
         <div class="panel" style="border-radius:16px;">
@@ -1170,10 +1170,7 @@ HTML = r"""<!doctype html>
           <div class="head"><span>Start</span><span class="small">#main</span></div>
           <div style="padding:12px;">
             <button id="join" disabled style="width:100%;">Join</button>
-            <div class="small" style="margin-top:6px;">
-              Tip: Alt+click ant žinutės #ID – greita reakcija.
-            </div>
-          </div>
+</div>
         </div>
       </div>
     </div>
@@ -1262,23 +1259,28 @@ HTML = r"""<!doctype html>
 
   // Vilnius clock (Europe/Vilnius)
   function startVilniusClock(){
-    if(!vilniusTimeEl) return;
+    const elApp = document.getElementById("vilniusTime");
+    const elLobby = document.getElementById("vilniusTimeLobby");
+    if(!elApp && !elLobby) return;
+
     const fmt = new Intl.DateTimeFormat("lt-LT", {
       timeZone: "Europe/Vilnius",
       hour: "2-digit",
       minute: "2-digit",
       second: "2-digit",
     });
+
     const tick = () => {
-      vilniusTimeEl.textContent = "Vilnius " + fmt.format(new Date());
+      const s = "Vilnius " + fmt.format(new Date());
+      if(elApp) elApp.textContent = s;
+      if(elLobby) elLobby.textContent = s;
     };
     tick();
     setInterval(tick, 1000);
   }
   startVilniusClock();
 
-
-  let ws = null;
+let ws = null;
   let connecting = false;
   let reconnectTimer = null;
   let reconnectDelay = 900;

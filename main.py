@@ -935,7 +935,51 @@ HTML = r"""<!doctype html>
     /* Rooms panel sections */
     .secTitle{ color:var(--muted); font-size:11px; font-weight:900; letter-spacing:.06em; text-transform:uppercase; margin:2px 2px 8px; }
     .roomsGroup{ display:flex; flex-direction:column; }
-    .leaveBtn{
+    
+    /* Rooms split: two sections (joined vs available) */
+    .roomsSplit{
+      overflow:hidden; display:flex; flex-direction:column; gap:12px;
+    }
+    .roomsPane{
+      flex:1; min-height:0; display:flex; flex-direction:column;
+    }
+    .roomsPane .roomsGroup{
+      flex:1; min-height:0; overflow:auto; padding-right:2px;
+    }
+    .roomsDivider{
+      height:1px; background:var(--border); opacity:.75;
+    }
+    /* Rooms visual hierarchy */
+    #roomsMine .item.joined{
+      border-color: rgba(255,255,255,0.10);
+      background: rgba(255,255,255,0.05);
+    }
+    #roomsAvail .item.notjoined{
+      opacity:.78;
+      border-style:dashed;
+      border-color: rgba(255,255,255,0.08);
+      background: rgba(0,0,0,0.08);
+    }
+    #roomsAvail .item.notjoined:hover{
+      opacity:.95;
+      border-color: rgba(255,255,255,0.16);
+      background: rgba(0,0,0,0.10);
+    }
+
+    /* Online count highlight */
+    #cnt{ color:var(--accent); font-weight:900; }
+
+    /* Logout: subtle red cue */
+    #logout{
+      color: rgba(255,120,120,0.90);
+      border-color: rgba(255,120,120,0.25);
+    }
+    #logout:hover{
+      color: var(--text);
+      border-color: rgba(255,120,120,0.40);
+      background: rgba(255,120,120,0.10);
+    }
+.leaveBtn{
       width:26px; height:26px; border-radius:10px; border:1px solid rgba(255,255,255,0.08);
       background:rgba(0,0,0,0.12); color:var(--muted); font-weight:900; cursor:pointer;
       display:inline-flex; align-items:center; justify-content:center; padding:0; line-height:1;
@@ -1114,11 +1158,16 @@ HTML = r"""<!doctype html>
     <div class="main">
       <div class="panel" style="display:grid; grid-template-rows:auto 1fr auto; min-height:0;">
         <div class="head"><span>Kanalai</span><span class="small">click</span></div>
-        <div class="list" id="roomsWrap">
-          <div class="secTitle">Mano kanalai</div>
-          <div id="roomsMine" class="roomsGroup"></div>
-          <div class="secTitle" style="margin-top:10px;">Galimi kanalai</div>
-          <div id="roomsAvail" class="roomsGroup"></div>
+        <div class="list roomsSplit" id="roomsWrap">
+          <div class="roomsPane minePane">
+            <div class="secTitle">Mano kanalai</div>
+            <div id="roomsMine" class="roomsGroup"></div>
+          </div>
+          <div class="roomsDivider"></div>
+          <div class="roomsPane availPane">
+            <div class="secTitle">Galimi kanalai</div>
+            <div id="roomsAvail" class="roomsGroup"></div>
+          </div>
         </div>
         <div style="padding:10px 10px 12px 10px; border-top:1px solid var(--border);">
           <input id="roomJoin" placeholder="įrašyk #room ir Enter (pvz #games)" />

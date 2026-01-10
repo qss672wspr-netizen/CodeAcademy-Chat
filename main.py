@@ -1222,7 +1222,21 @@ HTML = r"""<!doctype html>
 }
 .item.joined .joinDot{ opacity:1; }
 
-    #log{ padding:12px 14px; overflow:auto; min-height:0; white-space:normal; line-height:1.45; flex:1; }
+    #log{ padding:12px 14px; overflow:auto; min-height:0; white-space:normal; line-height:1.45; flex:1; position:relative; }
+
+#log::before{
+  content:"";
+  position:absolute; inset:0;
+  background-image:url('__LOGO_WATERMARK__');
+  background-repeat:no-repeat;
+  background-position:center 55%;
+  background-size:70%;
+  opacity:.22;
+  pointer-events:none;
+  filter:none;
+}
+#log .line{ position:relative; z-index:1; }
+
     .msgText{ white-space:pre-wrap; }
     .line{ margin:2px 0; }
     .t{ color: rgba(124,255,107,.40); }
@@ -1897,10 +1911,8 @@ function renderUsers(items){
       const uNick = String(u.nick||"");
       const isMe = (uNick === nick);
       row.dataset.nick = uNick;
-      row.classList.add("userItem");
+      row.className = "item userItem" + (isMe ? " me" : "");
       row.style.cursor = "pointer";
-      row.className = "item" + (isMe ? " me" : "");
-      row.style.cursor = "default";
       const mark = isMe ? '<span class="meMark" title="Tu">★</span>' : "";
       row.innerHTML = `
         <div class="urow">

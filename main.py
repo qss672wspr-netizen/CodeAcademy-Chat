@@ -23,9 +23,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 # ------------------------------------------------------------
 
 
-# VERSION: step25_clock_colors_watermark_rooms_sync
+# VERSION: step26_context_menu_mute_watermark
 APP_TITLE = "HestioRooms"
-APP_SUBTITLE = "Step 25 – Clock colors + stronger watermark + rooms sync"
+APP_SUBTITLE = "Step 26 – Context menu MVP + DM dblclick + mute + watermark"
 APP_TAGLINE = "Kanalai, istorija, pin/edit/del/react"
 
 app = FastAPI()
@@ -256,6 +256,36 @@ state_lock = asyncio.Lock()
 rooms: Dict[str, Room] = {}
 all_users_by_ws: Dict[WebSocket, User] = {}
 all_ws_by_nick_cf: Dict[str, WebSocket] = {}
+# ----------------- Mute (admin) -----------------
+# nick.casefold() -> epoch seconds when mute expires
+mute_until: Dict[str, float] = {}
+
+def is_muted(nick: str) -> float:
+    k = (nick or "").casefold()
+    until = mute_until.get(k, 0.0)
+    now = time.time()
+    if until and until > now:
+        return until
+    if until:
+        mute_until.pop(k, None)
+    return 0.0
+
+async def cmd_mute(ws: WebSocket, u: User, target_nick: str, minutes: int) -> Tuple[bool, str]:
+    if not is_admin_nick(u.nick):
+        return False, "forbidden"
+    tnick = (target_nick or "").strip()
+    if not valid_nick(tnick):
+        return False, "bad_nick"
+    minutes = max(1, min(1440, int(minutes)))
+    until = time.time() + minutes * 60
+    mute_until[tnick.casefold()] = until
+
+    await ws_send(ws, {"type": "sys", "t": ts(), "text": f'Vartotojas {tnick} užtildytas {minutes} min.'})
+    tws = all_ws_by_nick_cf.get(tnick.casefold())
+    if tws:
+        await ws_send(tws, {"type": "sys", "t": ts(), "text": f'Tu užtildytas {minutes} min.'})
+    return True, "ok"
+
 
 def ensure_room(room_key: str) -> Room:
     key = norm_room(room_key) or "main"
@@ -831,6 +861,27 @@ async def handle_command(ws: WebSocket, u: User, active_room: str, text: str) ->
         await cmd_react(ws, active_room, mid, parts[2])
         return True
 
+
+    if low.startswith("/mute "):
+        parts = t0.split()
+        if len(parts) < 2:
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Naudojimas: /mute nick [minutės]"})
+            return True
+        target = parts[1].lstrip("@")
+        mins = 10
+        if len(parts) >= 3:
+            try:
+                mins = int(parts[2])
+            except Exception:
+                mins = 10
+        ok3, c3 = await cmd_mute(ws, u, target, mins)
+        if not ok3 and c3 == "forbidden":
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Šią komandą gali naudoti tik admin."})
+        elif not ok3 and c3 == "bad_nick":
+            await ws_send(ws, {"type": "sys", "t": ts(), "text": "Netinkamas nick."})
+        return True
+
+
     return False
 
 # ----------------- HTTP routes -----------------
@@ -948,6 +999,11 @@ async def ws_endpoint(ws: WebSocket):
                 text = str(data.get("text", "")).strip()
                 if not text:
                     continue
+                mu = is_muted(u.nick)
+                if mu:
+                    await ws_send(ws, {"type": "sys", "t": ts(), "text": "Tu esi užtildytas."})
+                    continue
+
 
                 ok, code = check_rate_limit(u, len(text))
                 if not ok:
@@ -1007,9 +1063,9 @@ HTML = r"""<!doctype html>
     .wm{
       position:fixed; inset:0; pointer-events:none; z-index:0;
       display:flex; align-items:center; justify-content:center;
-      opacity:.12;
+      opacity:.20;
     }
-    .wm img{ width:min(820px, 80vw); height:auto; }
+    .wm img{ width:min(980px, 92vw); height:auto; }
     .wrap{ position:relative; z-index:1; height:100%; display:grid; grid-template-rows:auto 1fr auto; gap:12px; padding:14px; box-sizing:border-box; }
     .top{
       border:1px solid var(--border); border-radius:var(--radius); background:var(--panel);
@@ -1231,10 +1287,41 @@ HTML = r"""<!doctype html>
     #onlineLabel{ color: var(--accent); font-weight: 900; }
     #cnt{ color: var(--accent); font-weight: 900; }
     .tiny{ color: var(--muted); font-size: 12px; opacity: .85; }
+/* Context menu */
+.ctx{
+  position:fixed; z-index:9999;
+  min-width: 200px;
+  background: rgba(15, 17, 20, .96);
+  border: 1px solid rgba(255,255,255,.14);
+  border-radius: 14px;
+  box-shadow: 0 18px 48px rgba(0,0,0,.55);
+  padding: 8px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.ctx.hidden{ display:none; }
+.ctx .ctxTitle{ font-size: 12px; color: var(--muted); padding: 6px 10px 8px; }
+.ctx button{
+  width:100%;
+  text-align:left;
+  padding: 9px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.06);
+  background: rgba(255,255,255,.03);
+  color: var(--text);
+  cursor: pointer;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.ctx button:last-child{ margin-bottom: 0; }
+.ctx button:hover{ background: rgba(255,255,255,.06); }
+.ctx button.danger{ border-color: rgba(255,90,90,.28); color: rgba(255,130,130,.95); }
+.ctx button.muted{ opacity: .55; cursor: default; }
 </style>
 </head>
 <body>
   <div class="wm"><img src="__LOGO_WATERMARK__" alt="wm"/></div>
+  <div id="ctxMenu" class="ctx hidden" role="menu" aria-hidden="true"></div>
 
   <div id="lobby">
     <div class="card">
@@ -1351,6 +1438,53 @@ HTML = r"""<!doctype html>
 
   const dot = document.getElementById("dot");
   const st = document.getElementById("st");
+// Users list: double click opens DM, right click opens context menu
+usersEl.addEventListener("dblclick", (e) => {
+  const it = e.target.closest(".userItem");
+  if(!it) return;
+  const uNick = it.dataset.nick || "";
+  openDM(uNick);
+});
+
+usersEl.addEventListener("contextmenu", (e) => {
+  const it = e.target.closest(".userItem");
+  if(!it) return;
+  e.preventDefault();
+  const uNick = it.dataset.nick || "";
+  const items = [
+    {label: "Asmeninės žinutės (DM)", onClick: () => openDM(uNick)},
+    {label: "Paminėti @nick", onClick: () => mentionNick(uNick)},
+    {label: "Kopijuoti nick", onClick: () => copyText(uNick)},
+  ];
+  if(isAdmin() && uNick && uNick.toLowerCase() !== "admin"){
+    items.push({label: "Mute…", kind:"danger", onClick: () => muteNick(uNick)});
+  }
+  showCtx(uNick, items, e.clientX, e.clientY);
+});
+
+// Chat log: double click author opens DM, right click author menu
+logEl.addEventListener("dblclick", (e) => {
+  const n = e.target.closest(".nickSpan");
+  if(!n) return;
+  const uNick = n.dataset.nick || n.textContent || "";
+  openDM(uNick);
+});
+
+logEl.addEventListener("contextmenu", (e) => {
+  const n = e.target.closest(".nickSpan");
+  if(!n) return;
+  e.preventDefault();
+  const uNick = n.dataset.nick || n.textContent || "";
+  const items = [
+    {label: "Asmeninės žinutės (DM)", onClick: () => openDM(uNick)},
+    {label: "Paminėti @nick", onClick: () => mentionNick(uNick)},
+    {label: "Kopijuoti nick", onClick: () => copyText(uNick)},
+  ];
+  if(isAdmin() && uNick && uNick.toLowerCase() !== "admin"){
+    items.push({label: "Mute…", kind:"danger", onClick: () => muteNick(uNick)});
+  }
+  showCtx(uNick, items, e.clientX, e.clientY);
+});
   const logoutBtn = document.getElementById("logout");
   const vilniusTimeEl = document.getElementById("vilniusTime");
 
@@ -1383,6 +1517,109 @@ HTML = r"""<!doctype html>
     setInterval(tick, 1000);
   }
   startVilniusClock();
+
+// ---------- Context menu + quick actions ----------
+const ctxEl = document.getElementById("ctxMenu");
+const isAdmin = () => (nick || "").toLowerCase() === "admin";
+
+function dmRoomName(a, b){
+  const aa = String(a||"").trim().toLowerCase();
+  const bb = String(b||"").trim().toLowerCase();
+  const parts = [aa, bb].sort();
+  const safe = parts.map(x => x.replace(/[^a-z0-9_\-\.]/g, ""));
+  return `dm_${safe[0]}_${safe[1]}`;
+}
+
+function openDM(otherNick){
+  const other = String(otherNick||"").trim();
+  if(!other || other.toLowerCase() === (nick||"").toLowerCase()) return;
+  const room = dmRoomName(nick, other);
+  send({type:"say", room: activeRoom, text: `/join #${room}`});
+  pendingJoinRoom = room;
+  switchRoom(room);
+}
+
+function mentionNick(otherNick){
+  const other = String(otherNick||"").trim();
+  if(!other) return;
+  msgInput.value = (msgInput.value || "") + `@${other} `;
+  msgInput.focus();
+}
+
+function copyText(t){
+  const s = String(t||"");
+  if(!s) return;
+  try{
+    navigator.clipboard.writeText(s);
+    sysLine("Nukopijuota į clipboard.");
+  }catch(e){
+    const ta = document.createElement("textarea");
+    ta.value = s;
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+    sysLine("Nukopijuota į clipboard.");
+  }
+}
+
+function muteNick(otherNick){
+  const other = String(otherNick||"").trim();
+  if(!other) return;
+  const minsStr = prompt(`Mute vartotoją "${other}" kiek minučių?`, "10");
+  if(minsStr === null) return;
+  const mins = Math.max(1, Math.min(1440, parseInt(minsStr,10) || 10));
+  send({type:"say", room: activeRoom, text: `/mute ${other} ${mins}`});
+}
+
+function hideCtx(){
+  if(!ctxEl) return;
+  ctxEl.classList.add("hidden");
+  ctxEl.setAttribute("aria-hidden","true");
+  ctxEl.innerHTML = "";
+}
+
+function showCtx(title, items, x, y){
+  if(!ctxEl) return;
+  ctxEl.innerHTML = "";
+  const t = document.createElement("div");
+  t.className = "ctxTitle";
+  t.textContent = title || "";
+  ctxEl.appendChild(t);
+
+  for(const it of (items||[])){
+    const b = document.createElement("button");
+    b.textContent = it.label;
+    if(it.kind === "danger") b.classList.add("danger");
+    if(it.disabled) b.classList.add("muted");
+    b.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if(it.disabled) return;
+      hideCtx();
+      try{ it.onClick && it.onClick(); }catch(e){}
+    });
+    ctxEl.appendChild(b);
+  }
+
+  const pad = 8;
+  ctxEl.classList.remove("hidden");
+  ctxEl.setAttribute("aria-hidden","false");
+  const rect = ctxEl.getBoundingClientRect();
+  let xx = x, yy = y;
+  if(xx + rect.width + pad > window.innerWidth) xx = window.innerWidth - rect.width - pad;
+  if(yy + rect.height + pad > window.innerHeight) yy = window.innerHeight - rect.height - pad;
+  if(xx < pad) xx = pad;
+  if(yy < pad) yy = pad;
+  ctxEl.style.left = xx + "px";
+  ctxEl.style.top = yy + "px";
+}
+
+document.addEventListener("click", hideCtx);
+document.addEventListener("keydown", (e)=>{ if(e.key === "Escape") hideCtx(); });
+document.addEventListener("scroll", hideCtx, true);
 
 let ws = null;
   let connecting = false;
@@ -1484,29 +1721,35 @@ function esc(s){
   }
 
   function renderLine(o){
-    const t = esc(o.t || "");
-    const dbid = (o.id != null) ? Number(o.id) : null;
-    const id = dbid;
-    const seq = (o.seq != null) ? Number(o.seq) : null;
-    const showNo = (seq != null && !Number.isNaN(seq)) ? seq : ((dbid != null && !Number.isNaN(dbid)) ? dbid : null);
-    const idHtml = (showNo != null) ? `<span class="idTag" title="${(dbid!=null && !Number.isNaN(dbid)) ? ("ID: " + dbid) : ""}">#${showNo}</span>` : `<span class="idTag"></span>`;
+  const t = esc(o.t || "");
+  const dbid = (o.id != null) ? Number(o.id) : null;
+  const id = dbid;
+  const seq = (o.seq != null) ? Number(o.seq) : null;
+  const showNo = (seq != null && !Number.isNaN(seq)) ? seq : ((dbid != null && !Number.isNaN(dbid)) ? dbid : null);
+  const idHtml = (showNo != null)
+    ? `<span class="idTag" title="${dbid!=null ? `DB id ${dbid}` : ""}">#${showNo}</span>`
+    : `<span class="idTag"></span>`;
 
-    if(o.type === "msg"){
-      const edited = (o.extra && o.extra.edited) ? `<span class="meta">(edited)</span>` : "";
-      const reacts = renderReactions((o.extra && o.extra.reactions) ? o.extra.reactions : {});
-      return `<div class="line" ${id!=null ? `data-id="${id}"` : ""}>
-        ${idHtml}<span class="t">[${t}]</span> <span class="nick" style="color:${esc(o.color||'#d7e3f4')}">${esc(o.nick||'???')}</span>: <span class="msgText">${esc(o.text||'')}</span>${edited}${reacts}
-      </div>`;
-    }
-    if(o.type === "deleted"){
-      return `<div class="line" ${id!=null ? `data-id="${id}"` : ""}>
-        ${idHtml}<span class="t">[${t}]</span> <span class="sys">[deleted]</span>
-      </div>`;
-    }
+  if(o.type === "msg"){
+    const edited = (o.extra && o.extra.edited) ? `<span class="meta">(edited)</span>` : "";
+    const reacts = renderReactions((o.extra && o.extra.reactions) ? o.extra.reactions : {});
+    const n = esc(o.nick || "");
+    const c = esc(o.color || "#d7e3f4");
     return `<div class="line" ${id!=null ? `data-id="${id}"` : ""}>
-      ${idHtml}<span class="t">[${t}]</span> <span class="sys">${esc(o.text||'')}</span>
+      ${idHtml}<span class="t">[${t}]</span> <span class="nick nickSpan" data-nick="${n}" style="color:${c}">${n}</span>: <span class="msgText">${esc(o.text||'')}</span>${edited}${reacts}
     </div>`;
   }
+
+  if(o.type === "deleted"){
+    return `<div class="line" ${id!=null ? `data-id="${id}"` : ""}>
+      ${idHtml}<span class="t">[${t}]</span> <span class="sys">[deleted]</span>
+    </div>`;
+  }
+
+  return `<div class="line" ${id!=null ? `data-id="${id}"` : ""}>
+    ${idHtml}<span class="t">[${t}]</span> <span class="sys">${esc(o.text||'')}</span>
+  </div>`;
+}
 
   function ensureRoom(room, title, topic, count, joined, last_ts, last_preview){
     if(!roomState.has(room)){
@@ -1653,6 +1896,9 @@ function renderUsers(items){
       const row = document.createElement("div");
       const uNick = String(u.nick||"");
       const isMe = (uNick === nick);
+      row.dataset.nick = uNick;
+      row.classList.add("userItem");
+      row.style.cursor = "pointer";
       row.className = "item" + (isMe ? " me" : "");
       row.style.cursor = "default";
       const mark = isMe ? '<span class="meMark" title="Tu">★</span>' : "";

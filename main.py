@@ -22,6 +22,12 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 #         + branding (logo + watermark background)
 # ------------------------------------------------------------
 
+
+# VERSION: step13_ui_rooms_colors (2026-01-10)
+APP_TITLE = "HestioRooms"
+APP_SUBTITLE = "Step 13 – Rooms split & UI colors"
+APP_TAGLINE = "Kanalai, istorija, pin/edit/del/react"
+
 app = FastAPI()
 log = logging.getLogger("chat")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -740,7 +746,13 @@ async def handle_command(ws: WebSocket, u: User, active_room: str, text: str) ->
 # ----------------- HTTP routes -----------------
 @app.get("/", response_class=HTMLResponse)
 async def home():
-    return HTML.replace("__LOGO_DARK__", LOGO_DARK).replace("__LOGO_WATERMARK__", LOGO_WATERMARK)
+    return (HTML
+        .replace("__LOGO_DARK__", LOGO_DARK)
+        .replace("__LOGO_WATERMARK__", LOGO_WATERMARK)
+        .replace("__APP_TITLE__", APP_TITLE)
+        .replace("__APP_SUBTITLE__", APP_SUBTITLE)
+        .replace("__APP_TAGLINE__", APP_TAGLINE)
+    )
 
 @app.get("/health", response_class=PlainTextResponse)
 async def health():
@@ -879,7 +891,7 @@ HTML = r"""<!doctype html>
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>HestioRooms – Step 5</title>
+  <title>__APP_TITLE__ – __APP_SUBTITLE__</title>
   <style>
     :root{
       --bg:#0b0f14; --panel:rgba(255,255,255,.06); --panel2:rgba(255,255,255,.05);
@@ -1102,8 +1114,8 @@ HTML = r"""<!doctype html>
         <div class="brand">
           <img src="__LOGO_DARK__" alt="logo"/>
           <div>
-            <div><b>HestioRooms</b> <span class="small">Step 5 – SQLite + tools</span></div>
-            <div class="small">Kanalai, istorija, pin/edit/del/react</div>
+            <div><b>__APP_TITLE__</b> <span class="small">__APP_SUBTITLE__</span></div>
+            <div class="small">__APP_TAGLINE__</div>
           </div>
         </div>
         <div class="small">Vilnius time</div>
@@ -1143,7 +1155,7 @@ HTML = r"""<!doctype html>
     <div class="top">
       <div class="brand">
         <img src="__LOGO_DARK__" alt="logo"/>
-        <b>HestioRooms</b>
+        <b>__APP_TITLE__</b>
         <span class="topic" id="topic">#main</span>
       </div>
       <div class="actions">

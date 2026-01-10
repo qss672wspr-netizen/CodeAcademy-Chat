@@ -968,7 +968,8 @@ HTML = r"""<!doctype html>
 }
 .item.joined .joinDot{ opacity:1; }
 
-    #log{ padding:12px 14px; overflow:auto; min-height:0; white-space:pre-wrap; line-height:1.45; }
+    #log{ padding:12px 14px; overflow:auto; min-height:0; white-space:normal; line-height:1.45; }
+.msgText{ white-space:pre-wrap; }
     .line{ margin:2px 0; }
     .t{ color: rgba(124,255,107,.40); }
     .sys{ color: var(--muted); }
@@ -1205,7 +1206,7 @@ function esc(s){
       const edited = (o.extra && o.extra.edited) ? `<span class="meta">(edited)</span>` : "";
       const reacts = renderReactions((o.extra && o.extra.reactions) ? o.extra.reactions : {});
       return `<div class="line" ${id!=null ? `data-id="${id}"` : ""}>
-        ${idHtml}<span class="t">[${t}]</span> <span class="nick" style="color:${esc(o.color||'#d7e3f4')}">${esc(o.nick||'???')}</span>: ${esc(o.text||'')}${edited}${reacts}
+        ${idHtml}<span class="t">[${t}]</span> <span class="nick" style="color:${esc(o.color||'#d7e3f4')}">${esc(o.nick||'???')}</span>: <span class="msgText">${esc(o.text||'')}</span>${edited}${reacts}
       </div>`;
     }
     if(o.type === "deleted"){

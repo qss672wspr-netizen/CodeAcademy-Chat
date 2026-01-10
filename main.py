@@ -919,6 +919,8 @@ HTML = r"""<!doctype html>
     .dot.ok{ background:#21d07a; }
     .main{ min-height:0; display:grid; grid-template-columns: 280px 1fr 280px; gap:12px; }
     .panel{ min-height:0; border:1px solid var(--border); border-radius:var(--radius); background:var(--panel2); overflow:hidden; backdrop-filter: blur(10px); box-shadow: var(--shadow); }
+    .chatPanel{ display:flex; flex-direction:column; min-height:0; }
+
     .head{ padding:10px 12px; border-bottom:1px solid var(--border); color:var(--muted); display:flex; justify-content:space-between; align-items:center; gap:10px; }
     .list{ padding:10px 10px 12px 10px; overflow:auto; min-height:0; }
     .item{
@@ -970,7 +972,8 @@ HTML = r"""<!doctype html>
 }
 .item.joined .joinDot{ opacity:1; }
 
-    #log{ padding:12px 14px; overflow:auto; min-height:0; white-space:pre-wrap; line-height:1.45; }
+    #log{ padding:12px 14px; overflow:auto; min-height:0; white-space:normal; line-height:1.45; flex:1; }
+    .msgText{ white-space:pre-wrap; }
     .line{ margin:2px 0; }
     .t{ color: rgba(124,255,107,.40); }
     .sys{ color: var(--muted); }
@@ -1102,7 +1105,7 @@ HTML = r"""<!doctype html>
         </div>
       </div>
 
-      <div class="panel">
+      <div class="panel chatPanel">
         <div id="log"></div>
       </div>
 
@@ -1214,14 +1217,17 @@ function esc(s){
 
   function renderLine(o){
     const t = esc(o.t || "");
-    const id = (o.id != null) ? Number(o.id) : null;
-    const idHtml = (id != null) ? `<span class="idTag" data-id="${id}">#${id}</span>` : `<span class="idTag"></span>`;
+    const dbid = (o.id != null) ? Number(o.id) : null;
+    const id = dbid;
+    const seq = (o.seq != null) ? Number(o.seq) : null;
+    const showNo = (seq != null && !Number.isNaN(seq)) ? seq : ((dbid != null && !Number.isNaN(dbid)) ? dbid : null);
+    const idHtml = (showNo != null) ? `<span class="idTag" title="${(dbid!=null && !Number.isNaN(dbid)) ? ("ID: " + dbid) : ""}">#${showNo}</span>` : `<span class="idTag"></span>`;
 
     if(o.type === "msg"){
       const edited = (o.extra && o.extra.edited) ? `<span class="meta">(edited)</span>` : "";
       const reacts = renderReactions((o.extra && o.extra.reactions) ? o.extra.reactions : {});
       return `<div class="line" ${id!=null ? `data-id="${id}"` : ""}>
-        ${idHtml}<span class="t">[${t}]</span> <span class="nick" style="color:${esc(o.color||'#d7e3f4')}">${esc(o.nick||'???')}</span>: ${esc(o.text||'')}${edited}${reacts}
+        ${idHtml}<span class="t">[${t}]</span> <span class="nick" style="color:${esc(o.color||'#d7e3f4')}">${esc(o.nick||'???')}</span>: <span class="msgText">${esc(o.text||'')}</span>${edited}${reacts}
       </div>`;
     }
     if(o.type === "deleted"){
@@ -1236,7 +1242,7 @@ function esc(s){
 
   function ensureRoom(room, title, topic, count, joined, last_ts, last_preview){
     if(!roomState.has(room)){
-      roomState.set(room, {room, title:title||("#"+room), topic:topic||"", count: (count??0), unread:0, items:[]});
+      roomState.set(room, {room, title:title||("#"+room), topic:topic||"", count: (count??0), unread:0, items:[], seq:0, id2seq:new Map()});
     }else{
       const r = roomState.get(room);
       if(title) r.title = title;
@@ -1247,6 +1253,31 @@ function esc(s){
       if(last_preview!==undefined) r.last_preview = last_preview;
     }
     return roomState.get(room);
+  }
+
+  function assignSeq(r, obj){
+    if(!r) return;
+    if(!(r.id2seq instanceof Map)) r.id2seq = new Map();
+    if(typeof r.seq !== "number") r.seq = 0;
+
+    const dbid = (obj && obj.id != null) ? Number(obj.id) : null;
+    if(dbid == null || Number.isNaN(dbid)) return;
+
+    if(obj.type === "msg"){
+      let s = r.id2seq.get(dbid);
+      if(s == null){
+        r.seq += 1;
+        s = r.seq;
+        r.id2seq.set(dbid, s);
+      }
+      obj.seq = s;
+      return;
+    }
+
+    if(obj.type === "deleted"){
+      const s = r.id2seq.get(dbid);
+      if(s != null) obj.seq = s;
+    }
   }
 
   function renderRooms(){
@@ -1339,6 +1370,8 @@ function esc(s){
 
   function renderActiveLog(){
     const r = ensureRoom(activeRoom);
+    // ensure per-room sequential numbering (UI-only) is populated for history
+    for(const it of r.items){ assignSeq(r, it); }
     topicEl.textContent = "#" + activeRoom;
     clearLog();
     for(const it of r.items){
@@ -1349,6 +1382,7 @@ function esc(s){
 
   function appendToRoom(room, obj, noUnread=false){
     const r = ensureRoom(room);
+    assignSeq(r, obj);
     r.items.push(obj);
     if(r.items.length > 320) r.items.splice(0, r.items.length - 320);
     if(room !== activeRoom && !noUnread){

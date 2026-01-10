@@ -908,7 +908,9 @@ HTML = r"""<!doctype html>
       padding:12px 14px; display:flex; justify-content:space-between; align-items:center; gap:12px;
       backdrop-filter: blur(10px); box-shadow: var(--shadow);
     }
-    .brand{ display:flex; gap:12px; align-items:center; }
+    
+    .actions{ display:flex; align-items:center; gap:10px; }
+.brand{ display:flex; gap:12px; align-items:center; }
     .brand img{ width:38px; height:38px; border-radius:10px; box-shadow:0 10px 30px rgba(0,0,0,.35); }
     .brand b{ color:var(--accent); letter-spacing:.4px; }
     .topic{ color:var(--text); font-weight:900; }
@@ -968,8 +970,7 @@ HTML = r"""<!doctype html>
 }
 .item.joined .joinDot{ opacity:1; }
 
-    #log{ padding:12px 14px; overflow:auto; min-height:0; white-space:normal; line-height:1.45; }
-.msgText{ white-space:pre-wrap; }
+    #log{ padding:12px 14px; overflow:auto; min-height:0; white-space:pre-wrap; line-height:1.45; }
     .line{ margin:2px 0; }
     .t{ color: rgba(124,255,107,.40); }
     .sys{ color: var(--muted); }
@@ -1009,7 +1010,16 @@ HTML = r"""<!doctype html>
     }
     button:disabled{ opacity:.6; cursor:not-allowed; }
 
-    #lobby{ position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.60); padding:18px; box-sizing:border-box; z-index:3; }
+    
+    button.secondary{
+      padding:10px 12px; border-radius:12px;
+      background: rgba(255,255,255,.08);
+      color: var(--text);
+      border:1px solid var(--border);
+      font-weight:800;
+    }
+    button.secondary:hover{ background: rgba(255,255,255,.12); }
+#lobby{ position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.60); padding:18px; box-sizing:border-box; z-index:3; }
     .card{
       width:min(980px, 96vw); border:1px solid var(--border); border-radius:18px; background:rgba(255,255,255,.06);
       overflow:hidden; backdrop-filter: blur(12px); box-shadow: var(--shadow);
@@ -1074,9 +1084,12 @@ HTML = r"""<!doctype html>
         <b>HestioRooms</b>
         <span class="topic" id="topic">#main</span>
       </div>
-      <div class="pill">
-        <span id="dot" class="dot"></span>
-        <span id="st">disconnected</span>
+      <div class="actions">
+        <div class="pill">
+          <span id="dot" class="dot"></span>
+          <span id="st">disconnected</span>
+        </div>
+        <button id="logout" class="secondary" type="button" title="Atsijungti">Logout</button>
       </div>
     </div>
 
@@ -1129,6 +1142,7 @@ HTML = r"""<!doctype html>
 
   const dot = document.getElementById("dot");
   const st = document.getElementById("st");
+  const logoutBtn = document.getElementById("logout");
 
   let ws = null;
   let connecting = false;
@@ -1136,6 +1150,7 @@ HTML = r"""<!doctype html>
   let reconnectDelay = 900;
   const maxDelay = 8000;
   let joinedOnce = false;
+  let manualClose = false;
 
   let nick = "";
 
@@ -1206,7 +1221,7 @@ function esc(s){
       const edited = (o.extra && o.extra.edited) ? `<span class="meta">(edited)</span>` : "";
       const reacts = renderReactions((o.extra && o.extra.reactions) ? o.extra.reactions : {});
       return `<div class="line" ${id!=null ? `data-id="${id}"` : ""}>
-        ${idHtml}<span class="t">[${t}]</span> <span class="nick" style="color:${esc(o.color||'#d7e3f4')}">${esc(o.nick||'???')}</span>: <span class="msgText">${esc(o.text||'')}</span>${edited}${reacts}
+        ${idHtml}<span class="t">[${t}]</span> <span class="nick" style="color:${esc(o.color||'#d7e3f4')}">${esc(o.nick||'???')}</span>: ${esc(o.text||'')}${edited}${reacts}
       </div>`;
     }
     if(o.type === "deleted"){
@@ -1452,6 +1467,23 @@ function esc(s){
     ws.send(JSON.stringify(obj));
   }
 
+  function logout(){
+    manualClose = true;
+    stopReconnect();
+    try{
+      if(ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)){
+        ws.close(1000, "logout");
+      }
+    }catch(e){}
+    location.reload();
+  }
+  if(logoutBtn){
+    logoutBtn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      logout();
+    });
+  }
+
   function connect(){
     if(connecting) return;
     connecting = true;
@@ -1459,6 +1491,7 @@ function esc(s){
     ws = new WebSocket(wsUrl());
 
     ws.onopen = () => {
+      manualClose = false;
       connecting = false;
       stopReconnect();
       setConn(true);
@@ -1590,6 +1623,7 @@ function esc(s){
     };
 
     ws.onclose = () => {
+      if(manualClose) return;
       connecting = false;
       setConn(false);
       msgEl.disabled = true;

@@ -23,9 +23,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 # ------------------------------------------------------------
 
 
-# VERSION: step13_ui_rooms_colors (2026-01-10)
+# VERSION: step16_online_total_and_channel_count (2026-01-10)
 APP_TITLE = "HestioRooms"
-APP_SUBTITLE = "Step 13 – Rooms split & UI colors"
+APP_SUBTITLE = "Step 16 – Online total + channel list"
 APP_TAGLINE = "Kanalai, istorija, pin/edit/del/react"
 
 app = FastAPI()
@@ -301,6 +301,15 @@ def room_userlist(room_key: str) -> list[dict]:
 async def broadcast_userlist(room_key: str) -> None:
     await room_broadcast(room_key, {"type": "users", "room": room_key, "t": ts(), "items": room_userlist(room_key)})
 
+async def broadcast_global_count() -> None:
+    """Išsiunčia bendrą prisijungusių vartotojų skaičių visiems."""
+    async with state_lock:
+        sockets = list(all_users_by_ws.keys())
+        total = len(sockets)
+    obj = {"type": "global_count", "t": ts(), "total": total}
+    for w in sockets:
+        await ws_send(w, obj)
+
 
 async def send_rooms_list(ws: WebSocket) -> None:
     u = all_users_by_ws.get(ws)
@@ -441,6 +450,7 @@ async def disconnect_ws(ws: WebSocket) -> None:
         for rk in list(u.rooms):
             await broadcast_userlist(rk)
         await broadcast_rooms_list_all()
+        await broadcast_global_count()
 
 def check_rate_limit(u: User, msg_len: int) -> Tuple[bool, str]:
     now = time.time()
@@ -809,6 +819,8 @@ async def ws_endpoint(ws: WebSocket):
         all_users_by_ws[ws] = u
         all_ws_by_nick_cf[cf] = ws
 
+    await broadcast_global_count()
+
     hb_task: Optional[asyncio.Task] = asyncio.create_task(heartbeat(ws))
 
     await join_room(ws, "main")
@@ -1103,7 +1115,12 @@ HTML = r"""<!doctype html>
     .err{ color:var(--danger); font-size:12px; display:none; margin-top:8px; }
     .small{ color:var(--muted); font-size:12px; }
     @media (max-width: 980px){ .main{ grid-template-columns: 1fr; } .cardBody{ grid-template-columns: 1fr; } }
-  </style>
+  
+    /* Online header enhancements */
+    #onlineLabel{ color: var(--accent); font-weight: 900; }
+    #cnt{ color: var(--accent); font-weight: 900; }
+    .tiny{ color: var(--muted); font-size: 12px; opacity: .85; }
+</style>
 </head>
 <body>
   <div class="wm"><img src="__LOGO_WATERMARK__" alt="wm"/></div>
@@ -1191,7 +1208,7 @@ HTML = r"""<!doctype html>
       </div>
 
       <div class="panel" style="display:grid; grid-template-rows:auto 1fr; min-height:0;">
-        <div class="head"><span>Online</span><span class="small" id="cnt">0</span></div>
+        <div class="head"><span id="onlineLabel">Online</span><span style="display:flex;align-items:baseline;gap:8px;"><span class="small" id="cnt">0</span><span class="tiny" id="cntChan">kanale: 0</span></span></div>
         <div class="list" id="users"></div>
       </div>
     </div>
@@ -1218,6 +1235,7 @@ HTML = r"""<!doctype html>
   const roomsAvailEl = document.getElementById("roomsAvail");
   const usersEl = document.getElementById("users");
   const cntEl = document.getElementById("cnt");
+  const cntChanEl = document.getElementById("cntChan");
   const topicEl = document.getElementById("topic");
   const logEl = document.getElementById("log");
 
@@ -1761,14 +1779,22 @@ function renderUsers(items){
         renderRooms();
         return;
       }
+      if(o.type === "global_count"){
+        const total = Number(o.total || 0);
+        cntEl.textContent = String(total);
+        return;
+      }
+
       if(o.type === "users"){
         const room = o.room || "main";
+        const items = o.items || [];
+        const rr = ensureRoom(room);
+        rr.count = items.length;
         if(room === activeRoom){
-          renderUsers(o.items || []);
-          const rr = ensureRoom(room);
-          rr.count = (o.items || []).length;
-          renderRooms();
+          renderUsers(items);
+          if(cntChanEl) cntChanEl.textContent = "kanale: " + items.length;
         }
+        renderRooms();
         return;
       }
       if(o.type === "history"){

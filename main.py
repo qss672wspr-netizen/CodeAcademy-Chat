@@ -23,9 +23,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 # ------------------------------------------------------------
 
 
-# VERSION: step23_admin_delete_empty_rooms (2026-01-10)
+# VERSION: step24_fix_admin_room_delete_broadcast
 APP_TITLE = "HestioRooms"
-APP_SUBTITLE = "Step 23 – Admin delete empty rooms"
+APP_SUBTITLE = "Step 24 – Admin delete rooms refresh"
 APP_TAGLINE = "Kanalai, istorija, pin/edit/del/react"
 
 app = FastAPI()
@@ -419,6 +419,7 @@ async def leave_room(ws: WebSocket, room_key: str) -> Tuple[bool, str]:
     await broadcast_rooms_list_all()
     return True, "ok"
 
+
 async def admin_delete_room(ws: WebSocket, room_arg: str) -> Tuple[bool, str]:
     """Admin: delete a non-default room if it is empty (0 online)."""
     u = all_users_by_ws.get(ws)
@@ -426,26 +427,53 @@ async def admin_delete_room(ws: WebSocket, room_arg: str) -> Tuple[bool, str]:
         return False, "forbidden"
     if not is_admin_nick(u.nick):
         return False, "forbidden"
+
     key = norm_room(room_arg)
     if not key:
         return False, "bad_room"
     if key in DEFAULT_ROOMS:
         return False, "default_room"
+    # Never allow deleting DM/PM rooms via this command.
     if key.startswith("dm_") or key.startswith("dm-") or key.startswith("pm_") or key.startswith("pm-"):
         return False, "forbidden"
+
+    # Delete only when room is truly empty.
     async with state_lock:
         r = rooms.get(key)
         if not r:
             return False, "not_found"
-        if len(r.users) > 0:
+        if len(r.users) > 0 or len(getattr(r, "clients", set())) > 0:
             return False, "not_empty"
-        del rooms[key]
+
+        # Remove from registry
+        try:
+            del rooms[key]
+        except KeyError:
+            return False, "not_found"
+
+        # Defensive: remove from any user room-sets (should be none if empty)
+        for uu in all_users_by_ws.values():
+            try:
+                uu.rooms.discard(key)
+            except Exception:
+                pass
+
         try:
             mark_rooms_dirty()
         except Exception:
             pass
-    return True, "ok"
 
+    # Notify all clients to refresh rooms (and counts).
+    try:
+        await broadcast_rooms_list_all()
+    except Exception:
+        pass
+    try:
+        await broadcast_global_count()
+    except Exception:
+        pass
+
+    return True, "ok"
 
 async def focus_room(ws: WebSocket, room_key: str) -> None:
     u = all_users_by_ws.get(ws)

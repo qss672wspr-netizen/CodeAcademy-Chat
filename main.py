@@ -1235,9 +1235,9 @@ HTML = r"""<!doctype html>
   display:flex;
   align-items:center;
   justify-content:center;
-  gap:10px;
+  gap:18px;
 }
-.dimLinks .playLink{ margin:0; }
+.dimLinks .playLink{ margin:0; flex:1 1 0; max-width:220px; }
 .playLink{
   margin:0 auto;
   display:flex;
@@ -1648,9 +1648,9 @@ HTML = r"""<!doctype html>
         <img src="__PLAY_LOGO__" alt="HestioPlay"/>
         <span class="playText">HestioPlay</span>
       </a>
-      <a id="arenaLink" class="playLink arenaLink" href="/play3/" target="_blank" rel="noopener noreferrer" title="Open Arena (new tab)">
-        <img src="__ARENA_LOGO__" alt="Arena"/>
-        <span class="playText">Arena</span>
+      <a id="arenaLink" class="playLink arenaLink" href="/play3/" target="_blank" rel="noopener noreferrer" title="Open HestioArena (new tab)">
+        <img src="__ARENA_LOGO__" alt="HestioArena"/>
+        <span class="playText">HestioArena</span>
       </a>
     </div>
       <div class="actions">

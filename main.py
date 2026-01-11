@@ -37,7 +37,7 @@ PLAY2_ENABLED = False
 PLAY2_IMPORT_ERROR = None
 
 try:
-    import main_hestio_multigame_v2_patched as play2_v2  # keep this file next to main.py in your repo
+    import main_hestio_multigame_v2 as play2_v2  # keep this file next to main.py in your repo
     PLAY2_ENABLED = True
 except Exception:
     PLAY2_IMPORT_ERROR = traceback.format_exc()
@@ -1590,7 +1590,7 @@ HTML = r"""<!doctype html>
         <b>__APP_TITLE__</b>
         <span class="topic" id="topic">#main</span>
       </div>
-      <a id="playLink" class="playLink" href="/play/" target="_blank" rel="noopener noreferrer" title="Open HestioPlay (new tab)">
+      <a id="playLink" class="playLink" href="/play2/" target="_blank" rel="noopener noreferrer" title="Open HestioPlay (new tab)">
         <img src="__PLAY_LOGO__" alt="HestioPlay"/>
         <span class="playText">HestioPlay</span>
       </a>
@@ -1761,7 +1761,7 @@ logEl.addEventListener("contextmenu", (e) => {
 });
   const logoutBtn = document.getElementById("logout");
   const vilniusTimeEl = document.getElementById("vilniusTime");
-  // HestioPlay link uses native <a href="/play/" target="_blank"> (supports right-click open in new tab/window).
+  // HestioPlay link uses native <a href="/play2/" target="_blank"> (supports right-click open in new tab/window).
   // Vilnius clock (Europe/Vilnius)
   function startVilniusClock(){
     const elApp = document.getElementById("vilniusTime");
@@ -2976,7 +2976,7 @@ def build_play_app() -> 'FastAPI':
           <button onclick="connect()">Connect</button>
           <button onclick="sendSubmit()">Submit (random)</button>
           <button onclick="leave()">Leave</button>
-          <a href="/play" style="margin-left:12px;">Open /play client</a>
+          <a href="/play2/" style="margin-left:12px;">Open /play2</a>
         </div>
         <pre id="log"></pre>
         <script>

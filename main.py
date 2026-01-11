@@ -23,7 +23,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 # ------------------------------------------------------------
 
 
-# VERSION: step33_dm_toast_stronger (2026-01-11)
+# VERSION: step36_dm_toast_reliable (2026-01-11)
 APP_TITLE = "HestioRooms"
 APP_SUBTITLE = "Step 33 – Stronger DM toast"
 APP_TAGLINE = "Kanalai, istorija, pin/edit/del/react"
@@ -1185,23 +1185,31 @@ HTML = r"""<!doctype html>
 }
 
     .toast{
-      position:fixed;
-      top:76px;
-      left:50%;
-      transform:translateX(-50%);
-      z-index:9998;
-      display:none;
-      padding:12px 14px;
-      border-radius:16px;
-      border:1px solid rgba(110,255,200,.35);
-      background:rgba(0,0,0,.62);
-      backdrop-filter: blur(12px);
-      box-shadow: 0 10px 30px rgba(0,0,0,.45);
-      max-width:min(560px, 94vw);
-      cursor:pointer;
-      user-select:none;
-    }
-    .toast.show{ display:block; }
+  position:fixed;
+  top:72px;
+  left:50%;
+  z-index:100000;
+  padding:14px 16px;
+  border-radius:16px;
+  border:1px solid rgba(110,255,200,.55);
+  background:rgba(0,0,0,.78);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 14px 40px rgba(0,0,0,.55);
+  max-width:min(640px, 94vw);
+  cursor:pointer;
+  user-select:none;
+
+  display:block;              /* keep in flow for reliable paint */
+  opacity:0;
+  pointer-events:none;
+  transform:translate(-50%, -10px);
+  transition: opacity .16s ease, transform .16s ease;
+}
+.toast.show{
+  opacity:1;
+  pointer-events:auto;
+  transform:translate(-50%, 0);
+}
     .toast .row{ display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
     .toast .x{
       flex:0 0 auto;
@@ -2201,10 +2209,16 @@ function renderUsers(items){
     if(r.items.length > 320) r.items.splice(0, r.items.length - 320);
     if(room !== activeRoom && !noUnread){
       r.unread = (r.unread||0) + 1;
-      // DM notification toast (only when message from someone else)
-      if(isDMRoom(room) && obj && obj.type === "msg" && obj.nick && nick && String(obj.nick).toLowerCase() !== String(nick).toLowerCase()){
-        showDMToast(obj.nick, room);
-      }
+      // DM notification toast: show on first unread DM for this room (reliable)
+if(isDMRoom(room) && nick){
+  const from = (obj && (obj.nick || obj.from || obj.sender)) || "";
+  const self = String(nick).toLowerCase();
+  const sender = String(from||"").toLowerCase();
+  // show only when sender is not me and this is the first unread in that DM room
+  if(sender && sender !== self && (r.unread||0) === 1){
+    showDMToast(from, room);
+  }
+}
     }
     if(room === activeRoom){
       addLineHTML(renderLine(obj));

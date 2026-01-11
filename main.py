@@ -7,6 +7,7 @@ import sqlite3
 import time
 import os
 import secrets
+import traceback
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -14,7 +15,7 @@ from typing import Any, Deque, Dict, Optional, Set, Tuple
 
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 
 # ------------------------------------------------------------
 # STEP 5: Rooms + user list + (PERSISTENT) history in SQLite
@@ -29,6 +30,54 @@ APP_SUBTITLE = "Step 33 – Stronger DM toast"
 APP_TAGLINE = "Kanalai, istorija, pin/edit/del/react"
 
 app = FastAPI()
+
+# ----------------- HestioPlay v2 (mounted under /play2 for safe testing) -----------------
+# This keeps the HestioRooms chat UI untouched while allowing you to test the new multi-game lobby.
+PLAY2_ENABLED = False
+PLAY2_IMPORT_ERROR = None
+
+try:
+    import main_hestio_multigame_v2_patched as play2_v2  # keep this file next to main.py in your repo
+    PLAY2_ENABLED = True
+except Exception:
+    PLAY2_IMPORT_ERROR = traceback.format_exc()
+    play2_v2 = None
+
+
+if PLAY2_ENABLED:
+    @app.get("/play2")
+    async def play2_root() -> RedirectResponse:
+        return RedirectResponse(url="/play2/play", status_code=307)
+
+    @app.get("/play2/")
+    async def play2_root_slash() -> RedirectResponse:
+        return RedirectResponse(url="/play2/play", status_code=307)
+
+    @app.get("/play2/play")
+    async def play2_play_page() -> HTMLResponse:
+        html = getattr(play2_v2, "PLAY_PAGE", None)
+        if not html:
+            return PlainTextResponse("HestioPlay v2: PLAY_PAGE not found in main_hestio_multigame_v2_patched.py", status_code=500)
+
+        patched = html.replace("location.host}/ws", "location.host}/play2/ws", 1)
+        return HTMLResponse(patched)
+
+    # Mount the whole v2 app under /play2 so its websocket endpoint becomes /play2/ws.
+    app.mount("/play2", play2_v2.app)
+
+else:
+    @app.get("/play2")
+    async def play2_missing() -> PlainTextResponse:
+        return PlainTextResponse(
+            "HestioPlay v2 could not be loaded. Ensure main_hestio_multigame_v2_patched.py is present in the repo.\n\n"
+            + (PLAY2_IMPORT_ERROR or ""),
+            status_code=500,
+        )
+
+    @app.get("/play2/")
+    async def play2_missing_slash() -> PlainTextResponse:
+        return await play2_missing()
+
 log = logging.getLogger("chat")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 

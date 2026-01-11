@@ -146,13 +146,6 @@ MAX_CHARS_PER_10S = 2600
 ADMIN_NICKS = {"admin"}  # case-insensitive palyginimas
 ADMIN_PASSWORD = (os.environ.get("ADMIN_PASSWORD") or "").strip()
 
-# ----------------- Server bot (always online) -----------------
-SERVER_BOT_NICK = "HestioBot"  # reserved nick shown as always-online user
-SERVER_BOT_NICK_CF = SERVER_BOT_NICK.casefold()
-SERVER_BOT_COLOR = "#8a97a8"
-SERVER_BOT_SHOW_IN_DEFAULT_ROOMS = True  # shows in all DEFAULT_ROOMS channels
-
-
 def is_admin_nick(nick: str) -> bool:
     return (nick or "").casefold() in {x.casefold() for x in ADMIN_NICKS}
 
@@ -482,12 +475,6 @@ async def room_broadcast(room_key: str, obj: dict, exclude: Optional[WebSocket] 
 def room_userlist(room_key: str) -> list[dict]:
     r = ensure_room(room_key)
     items = [{"nick": u.nick, "color": u.color} for u in r.users.values()]
-
-    # Always show a server bot as a stable presence (without a real WS connection).
-    if SERVER_BOT_SHOW_IN_DEFAULT_ROOMS and room_key in DEFAULT_ROOMS:
-        if not any((it.get("nick") or "").casefold() == SERVER_BOT_NICK_CF for it in items):
-            items.append({"nick": SERVER_BOT_NICK, "color": SERVER_BOT_COLOR, "bot": True})
-
     items.sort(key=lambda x: x["nick"].casefold())
     return items
 
@@ -498,7 +485,7 @@ async def broadcast_global_count() -> None:
     """Išsiunčia bendrą prisijungusių vartotojų skaičių visiems."""
     async with state_lock:
         sockets = list(all_users_by_ws.keys())
-        total = len(sockets) + 1  # + server bot
+        total = len(sockets)
     obj = {"type": "global_count", "t": ts(), "total": total}
     for w in sockets:
         await ws_send(w, obj)
@@ -1071,9 +1058,6 @@ async def check_nick(nick: str = "", pw: str = ""):
     if not valid_nick(n):
         return JSONResponse({"ok": False, "code": "BAD_NICK", "reason": "Netinkamas nick.", "needs_pw": is_admin_nick(n)})
 
-    if n.casefold() == SERVER_BOT_NICK_CF:
-        return JSONResponse({"ok": False, "code": "RESERVED_NICK", "reason": "Šis nick rezervuotas.", "needs_pw": False})
-
     # admin password gate (tik jei ADMIN_PASSWORD sukonfigūruotas)
     if is_admin_nick(n) and ADMIN_PASSWORD:
         if not (pw or "").strip():
@@ -1098,11 +1082,6 @@ async def ws_endpoint(ws: WebSocket):
 
     if not valid_nick(nick):
         await ws_send(ws, {"type": "error", "code": "BAD_NICK", "text": "Netinkamas nick."})
-        await ws.close()
-        return
-
-    if nick.casefold() == SERVER_BOT_NICK_CF:
-        await ws_send(ws, {"type": "error", "code": "RESERVED_NICK", "text": "Šis nick rezervuotas."})
         await ws.close()
         return
 
@@ -1430,17 +1409,25 @@ HTML = r"""<!doctype html>
       background: rgba(255,120,120,0.10);
     }
 .leaveBtn{
-      width:26px; height:26px; border-radius:10px; border:1px solid rgba(255,255,255,0.08);
-      background:rgba(0,0,0,0.12); color:var(--muted); font-weight:900; cursor:pointer;
-      display:inline-flex; align-items:center; justify-content:center; padding:0; line-height:1;
+      width:28px; height:28px; box-sizing:border-box;
+      border-radius:999px; border:1px solid rgba(255,255,255,0.08);
+      background:rgba(0,0,0,0.12); color:var(--muted);
+      font-weight:900; font-size:16px; line-height:1;
+      cursor:pointer;
+      display:inline-flex; align-items:center; justify-content:center;
+      padding:0; flex:0 0 auto;
     }
     .leaveBtn:hover{ border-color:rgba(255,255,255,0.18); color:var(--text); }
     .leaveBtn:disabled{ opacity:.35; cursor:not-allowed; }
 
 .delBtn{
-  width:26px; height:26px; border-radius:10px; border:1px solid rgba(239,68,68,.45);
-  background:rgba(239,68,68,.10); color:rgba(239,68,68,.95); font-weight:900; cursor:pointer;
-  display:flex; align-items:center; justify-content:center; line-height:1; padding:0;
+  width:28px; height:28px; box-sizing:border-box;
+  border-radius:999px; border:1px solid rgba(239,68,68,.45);
+  background:rgba(239,68,68,.10); color:rgba(239,68,68,.95);
+  font-weight:900; font-size:16px; line-height:1;
+  cursor:pointer;
+  display:inline-flex; align-items:center; justify-content:center;
+  padding:0; flex:0 0 auto;
 }
 .delBtn:hover{ background:rgba(239,68,68,.16); }
 .delBtn:disabled{ opacity:.35; cursor:not-allowed; }

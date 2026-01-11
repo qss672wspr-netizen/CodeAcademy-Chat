@@ -1752,7 +1752,7 @@ function openDM(otherNick){
   const other = String(otherNick||"").trim();
   if(!other || other.toLowerCase() === (nick||"").toLowerCase()) return;
   const room = dmRoomName(nick, other);
-  send({type:"say", room: activeRoom, text: `/join #${room}`});
+  wsSend({type:"say", room: activeRoom, text: `/join #${room}`});
   pendingJoinRoom = room;
   switchRoom(room);
 }
@@ -1789,7 +1789,7 @@ function muteNick(otherNick){
   const minsStr = prompt(`Mute vartotoją "${other}" kiek minučių?`, "10");
   if(minsStr === null) return;
   const mins = Math.max(1, Math.min(1440, parseInt(minsStr,10) || 10));
-  send({type:"say", room: activeRoom, text: `/mute ${other} ${mins}`});
+  wsSend({type:"say", room: activeRoom, text: `/mute ${other} ${mins}`});
 }
 
 function hideCtx(){

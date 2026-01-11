@@ -1292,7 +1292,7 @@ SNOWMINES_HTML = r"""<!doctype html>
       <div class="title">
         <h1>Hestio SnowMines — Competition (1–10)</h1>
         <p>30×20. Visi žaidėjai sprendžia <strong>tą pačią lentą</strong>. Pradžioje atveriamas bendras saugus centras. Laimi tas, kas <strong>greičiausiai išsprendžia</strong> (arba pagal progresą, jei baigiasi laikas).</p>
-        <div class="row" style="margin-top:10px;"><a class="pill" href="/play">Back to HestioPlay</a></div>
+        <div class="row" style="margin-top:10px;"><a class="pill" id="backToPlay" href="#">Back to HestioPlay</a></div>
       </div>
 
       <div class="row">
@@ -1479,7 +1479,17 @@ SNOWMINES_HTML = r"""<!doctype html>
   const clockPill = document.getElementById("clockPill");
   const statusBox = document.getElementById("statusBox");
 
-  const createBtn = document.getElementById("createBtn");
+    function basePrefix(){
+    const p = location.pathname;
+    const i = p.indexOf("/snowmines");
+    return (i >= 0) ? p.slice(0, i) : "";
+  }
+
+  // Set back link (works under mounts like /play2)
+  const backToPlay = document.getElementById("backToPlay");
+  if (backToPlay){ backToPlay.href = (basePrefix() || "") + "/play"; }
+
+const createBtn = document.getElementById("createBtn");
   const copyBtn = document.getElementById("copyBtn");
   const joinBtn = document.getElementById("joinBtn");
   const roomInput = document.getElementById("roomInput");
@@ -1529,7 +1539,10 @@ try{
 
   function wsUrl(){
     const proto = (location.protocol === "https:") ? "wss" : "ws";
-    return `${proto}://${location.host}/play/snowmines/ws`;
+    const p = location.pathname;
+    const i = p.indexOf("/snowmines");
+    const prefix = (i >= 0) ? p.slice(0, i) : "";
+    return `${proto}://${location.host}${prefix}/snowmines/ws`;
   }
 
   function send(msg){
@@ -1659,7 +1672,7 @@ try{
       timeLabel.textContent = `Vyksta • likę ${fmtTime(left)}`;
       clockPill.textContent = `Laikas: ${fmtTime(left)}`;
     } else {
-      timeLabel.textContent = `Baigta • ${s.endReason === "solved" ? "išspręsta" : "laikas baigėsi"}`;
+      timeLabel.textContent = `Baigta • ${s.endReason === "solved" ? "išspręsta" : (s.endReason === "all_dead" ? "visi užlipo ant minos" : "laikas baigėsi")}`;
       clockPill.textContent = "Laikas: 0:00";
     }
 
@@ -1688,7 +1701,10 @@ try{
 
     // leaderboard
     const sorted = [...s.players].sort((a,b) => {
-      // finished first wins, else highest revealed, else earlier join
+      // Alive players first. Then: finished (smaller time), else higher revealed.
+      const ad = a.dead ? 1 : 0;
+      const bd = b.dead ? 1 : 0;
+      if (ad !== bd) return ad - bd;
       const af = (a.finishedAt==null) ? 1e18 : a.finishedAt;
       const bf = (b.finishedAt==null) ? 1e18 : b.finishedAt;
       if (af !== bf) return af - bf;
@@ -1714,7 +1730,7 @@ try{
     } else if (s.status === "running"){
       setStatus(`Vyksta match. Visi sprendžia tą pačią lentą. Kairys click — atidengti, dešinys click (arba ilgai paliesti) — vėliava, dvigubas click — chord.`);
     } else {
-      const reason = s.endReason === "solved" ? "Išspręsta" : "Baigėsi laikas";
+      const reason = s.endReason === "solved" ? "Išspręsta" : (s.endReason === "all_dead" ? "Visi užlipo ant minos" : "Baigėsi laikas");
       setStatus(`${reason}. Nugalėtojas: <strong>${wn}</strong>. Host gali paspausti <strong>Naujas match</strong>.`);
     }
   }
@@ -2273,7 +2289,7 @@ try{
 # -----------------------------
 
 snow_app = FastAPI(title="Hestio SnowMines — Competitive 30×20")
-app.mount("/play/snowmines", snow_app)
+app.mount("/snowmines", snow_app)
 
 @snow_app.get("/", response_class=HTMLResponse)
 def root() -> HTMLResponse:
@@ -2542,6 +2558,11 @@ async def ws_endpoint(ws: WebSocket) -> None:
 
                     # after action
                     check_finish(room, p)
+                    # If everyone is dead, end early.
+                    if all(pp.dead for pp in room.players.values()):
+                        end_match(room, None, "all_dead")
+                        await broadcast_room(room)
+                        continue
                     if p.finished_at is not None and room.winner_session is None:
                         room.winner_session = session_id
                         end_match(room, room.winner_session, "solved")
@@ -3074,7 +3095,8 @@ function connect(){
     if(gameType==="snowmines_30x20"){
       const nick = (name||preferredNick()||"").trim();
       if(nick){ byId("name").value = nick; persistNick(nick); }
-      window.location.href = "/play/snowmines/?nick=" + encodeURIComponent(nick);
+      const prefix = location.pathname.replace(/\/play\/?$/, "");
+      window.location.href = (prefix || "") + "/snowmines/?nick=" + encodeURIComponent(nick);
       return;
     }
 

@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -94,6 +95,7 @@ def make_room_id() -> str:
 GAMES: List[Dict[str, str]] = [
     {"id": "rebuild_6x6", "name": "Rebuild the Pattern (6×6)", "tag": "Drag pieces onto the grid"},
     {"id": "tile_3x3", "name": "Tile Puzzle (3×3)", "tag": "Recreate the image from tiles"},
+    {"id": "snowmines_30x20", "name": "SnowMines (30×20)", "tag": "Competitive mines — open & flag"},
 ]
 GAME_IDS = {g["id"] for g in GAMES}
 
@@ -552,6 +554,2022 @@ CHAT_FALLBACK_HTML = """
 """.strip()
 
 
+
+
+# -----------------------------
+# SnowMines (mounted under /play/snowmines)
+# -----------------------------
+
+# =============================================================================
+# Core configuration
+# =============================================================================
+
+COLS = 30
+ROWS = 20
+MAX_PLAYERS = 10
+
+# Competition-oriented: all levels capped to 3 minutes (180s)
+LEVELS: Dict[str, Dict[str, Any]] = {
+    "easy": {"label": "Lengvas", "mines": 80, "timeS": 180},
+    "medium": {"label": "Vidutinis", "mines": 110, "timeS": 180},
+    "hard": {"label": "Sunkus", "mines": 140, "timeS": 180},
+}
+
+SAFE_START_RC = (ROWS // 2, COLS // 2)  # shared safe start for all players (fair board)
+
+
+def now_s() -> float:
+    return time.time()
+
+
+def gen_room_code() -> str:
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    return "".join(secrets.choice(alphabet) for _ in range(4))
+
+
+def inb(r: int, c: int) -> bool:
+    return 0 <= r < ROWS and 0 <= c < COLS
+
+
+def idx(r: int, c: int) -> int:
+    return r * COLS + c
+
+
+def neighbors(r: int, c: int) -> List[Tuple[int, int]]:
+    out: List[Tuple[int, int]] = []
+    for dr in (-1, 0, 1):
+        for dc in (-1, 0, 1):
+            if dr == 0 and dc == 0:
+                continue
+            rr, cc = r + dr, c + dc
+            if inb(rr, cc):
+                out.append((rr, cc))
+    return out
+
+
+# =============================================================================
+# Room model (in-memory)
+# =============================================================================
+
+@dataclass
+class Player:
+    session_id: str
+    ws: Optional[WebSocket] = None
+    name: str = "Žaidėjas"
+    joined_at: float = field(default_factory=now_s)
+
+    # Per-player view/progress
+    open: List[bool] = field(default_factory=list)
+    flag: List[bool] = field(default_factory=list)
+    revealed: int = 0
+    flags: int = 0
+    dead: bool = False
+    finished_at: Optional[float] = None  # seconds since room.start_at
+
+    last_seen: float = field(default_factory=now_s)
+
+    @property
+    def connected(self) -> bool:
+        return self.ws is not None
+
+
+@dataclass
+class Room:
+    code: str
+    created_at: float = field(default_factory=now_s)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    # lobby / running / ended
+    status: str = "lobby"
+    host_session: Optional[str] = None
+
+    # settings
+    level_key: str = "medium"
+
+    # game field (shared)
+    seed: int = field(default_factory=lambda: secrets.randbits(31))
+    mines: List[bool] = field(default_factory=list)
+    adj: List[int] = field(default_factory=list)
+
+    # timing
+    start_at: Optional[float] = None
+    deadline_at: Optional[float] = None
+
+    # competition outcome
+    winner_session: Optional[str] = None
+    end_reason: Optional[str] = None  # "solved" | "timeout" | "host_end"
+
+    # players
+    players: Dict[str, Player] = field(default_factory=dict)
+
+    def capacity_left(self) -> int:
+        return MAX_PLAYERS - len(self.players)
+
+    def level(self) -> Dict[str, Any]:
+        return LEVELS.get(self.level_key, LEVELS["medium"])
+
+    def is_full(self) -> bool:
+        return len(self.players) >= MAX_PLAYERS
+
+    def both_started(self) -> bool:
+        return self.status in ("running", "ended")
+
+    def ensure_player_arrays(self, p: Player) -> None:
+        n = ROWS * COLS
+        if not p.open or len(p.open) != n:
+            p.open = [False] * n
+        if not p.flag or len(p.flag) != n:
+            p.flag = [False] * n
+
+
+ROOMS: Dict[str, Room] = {}
+ROOMS_GUARD = asyncio.Lock()
+RECONNECT_TTL_S = 120.0
+
+
+# =============================================================================
+# Minefield generation (shared for the room)
+# =============================================================================
+
+def build_field(level_key: str, seed: int) -> Tuple[List[bool], List[int]]:
+    cfg = LEVELS.get(level_key, LEVELS["medium"])
+    mine_count = int(cfg["mines"])
+    n = ROWS * COLS
+
+    mines = [False] * n
+    adj = [0] * n
+
+    rng = random.Random(seed)
+
+    sr, sc = SAFE_START_RC
+    safe = {idx(sr, sc)}
+    for rr, cc in neighbors(sr, sc):
+        safe.add(idx(rr, cc))
+
+    candidates = [i for i in range(n) if i not in safe]
+    rng.shuffle(candidates)
+    mine_count = min(mine_count, len(candidates))
+    for i in candidates[:mine_count]:
+        mines[i] = True
+
+    # adjacency
+    for r in range(ROWS):
+        for c in range(COLS):
+            i = idx(r, c)
+            if mines[i]:
+                adj[i] = 0
+                continue
+            cnt = 0
+            for rr, cc in neighbors(r, c):
+                if mines[idx(rr, cc)]:
+                    cnt += 1
+            adj[i] = cnt
+
+    return mines, adj
+
+
+def flood_open(room: Room, p: Player, start_r: int, start_c: int) -> None:
+    """Open a cell; if 0, flood fill. Does not allow opening mines."""
+    if p.dead or p.finished_at is not None or room.status != "running":
+        return
+
+    i0 = idx(start_r, start_c)
+    if p.open[i0] or p.flag[i0]:
+        return
+    if room.mines[i0]:
+        # should not happen if starting at safe cell; but keep safe.
+        p.open[i0] = True
+        p.dead = True
+        return
+
+    stack = [(start_r, start_c)]
+    while stack:
+        r, c = stack.pop()
+        i = idx(r, c)
+        if p.open[i] or p.flag[i]:
+            continue
+        if room.mines[i]:
+            continue
+        p.open[i] = True
+        p.revealed += 1
+        if room.adj[i] == 0:
+            for rr, cc in neighbors(r, c):
+                ii = idx(rr, cc)
+                if not p.open[ii] and not p.flag[ii] and not room.mines[ii]:
+                    stack.append((rr, cc))
+
+
+def check_finish(room: Room, p: Player) -> None:
+    if p.dead or p.finished_at is not None or room.start_at is None:
+        return
+    total_non_mines = ROWS * COLS - room.level()["mines"]
+    if p.revealed >= total_non_mines:
+        p.finished_at = max(0.0, now_s() - room.start_at)
+
+
+def compute_winner_on_timeout(room: Room) -> Optional[str]:
+    """Winner by best progress, tiebreak by earliest finish (if any), then join time."""
+    best_sid = None
+    best_revealed = -1
+    best_finished = None
+    best_joined = None
+
+    for sid, p in room.players.items():
+        # dead players are allowed to "compete" but are heavily penalized
+        revealed = p.revealed if not p.dead else -1
+        finished = p.finished_at
+        joined = p.joined_at
+
+        key = (revealed, -(finished or 10**9), -joined)  # custom ordering applied below
+        # We'll just compare explicitly:
+        if revealed > best_revealed:
+            best_sid = sid
+            best_revealed = revealed
+            best_finished = finished
+            best_joined = joined
+        elif revealed == best_revealed:
+            # if someone finished, prefer smaller finished time
+            if finished is not None and (best_finished is None or finished < best_finished):
+                best_sid = sid
+                best_finished = finished
+                best_joined = joined
+            elif finished == best_finished:
+                # earliest join as deterministic
+                if best_joined is None or joined < best_joined:
+                    best_sid = sid
+                    best_joined = joined
+
+    return best_sid
+
+
+# =============================================================================
+# Networking helpers
+# =============================================================================
+
+async def ws_send(ws: WebSocket, msg: Dict[str, Any]) -> None:
+    await ws.send_text(json.dumps(msg, ensure_ascii=False))
+
+
+def room_summary(room: Room) -> Dict[str, Any]:
+    players = []
+    for sid, p in room.players.items():
+        players.append(
+            {
+                "session": sid,
+                "name": p.name,
+                "connected": p.connected,
+                "revealed": p.revealed,
+                "flags": p.flags,
+                "dead": p.dead,
+                "finishedAt": p.finished_at,
+                "isHost": (room.host_session == sid),
+            }
+        )
+    # stable order: host first, then join order
+    players.sort(key=lambda x: (0 if x["isHost"] else 1, room.players[x["session"]].joined_at))
+
+    cfg = room.level()
+    return {
+        "room": room.code,
+        "status": room.status,
+        "host": room.host_session,
+        "levelKey": room.level_key,
+        "levelLabel": cfg["label"],
+        "mines": cfg["mines"],
+        "timeS": cfg["timeS"],
+        "players": players,
+        "startAt": room.start_at,
+        "deadlineAt": room.deadline_at,
+        "serverNow": now_s(),
+        "winnerSession": room.winner_session,
+        "endReason": room.end_reason,
+    }
+
+
+def player_view_grid(room: Room, p: Player) -> List[int]:
+    """
+    Returns flattened grid for the player:
+      -3 covered
+      -2 flag
+      -1 mine (only if opened OR game ended OR player dead)
+       0..8 number for opened cell
+    """
+    n = ROWS * COLS
+    out = [-3] * n
+    reveal_mines = (p.dead or room.status == "ended")
+
+    for i in range(n):
+        if p.flag[i] and not p.open[i]:
+            out[i] = -2
+            continue
+        if p.open[i]:
+            if room.mines[i]:
+                out[i] = -1
+            else:
+                out[i] = int(room.adj[i])
+            continue
+        if reveal_mines and room.mines[i]:
+            out[i] = -1
+
+    return out
+
+
+async def broadcast_room(room: Room) -> None:
+    """Send per-player state + shared summary."""
+    summary = room_summary(room)
+    for sid, p in list(room.players.items()):
+        if not p.ws:
+            continue
+        try:
+            await ws_send(
+                p.ws,
+                {
+                    "type": "state",
+                    "summary": summary,
+                    "you": {"session": sid},
+                    "grid": player_view_grid(room, p) if room.status in ("running", "ended") else None,
+                },
+            )
+        except Exception:
+            # ignore send errors; disconnect handler will clean up
+            pass
+
+
+def purge_stale(room: Room) -> None:
+    cutoff = now_s() - RECONNECT_TTL_S
+    stale = []
+    for sid, p in room.players.items():
+        if (not p.connected) and p.last_seen < cutoff:
+            stale.append(sid)
+    for sid in stale:
+        room.players.pop(sid, None)
+        if room.host_session == sid:
+            room.host_session = None
+    if room.host_session is None and room.players:
+        # promote earliest join
+        room.host_session = min(room.players.values(), key=lambda pp: pp.joined_at).session_id
+
+
+async def ensure_room(code: str) -> Room:
+    async with ROOMS_GUARD:
+        if code in ROOMS:
+            return ROOMS[code]
+        room = Room(code=code)
+        ROOMS[code] = room
+        return room
+
+
+async def create_room() -> Room:
+    async with ROOMS_GUARD:
+        for _ in range(1000):
+            code = gen_room_code()
+            if code not in ROOMS:
+                room = Room(code=code)
+                ROOMS[code] = room
+                return room
+    # fallback
+    code = secrets.token_hex(2).upper()
+    room = Room(code=code)
+    async with ROOMS_GUARD:
+        ROOMS[code] = room
+    return room
+
+
+async def delete_room_if_empty(code: str) -> None:
+    async with ROOMS_GUARD:
+        room = ROOMS.get(code)
+        if not room:
+            return
+        if not room.players:
+            ROOMS.pop(code, None)
+
+
+# =============================================================================
+# Room gameplay lifecycle
+# =============================================================================
+
+def start_match(room: Room) -> None:
+    cfg = room.level()
+    room.seed = secrets.randbits(31)
+    room.mines, room.adj = build_field(room.level_key, room.seed)
+    room.status = "running"
+    room.start_at = now_s()
+    room.deadline_at = room.start_at + float(cfg["timeS"])
+    room.winner_session = None
+    room.end_reason = None
+
+    # reset all players and apply shared initial opening
+    sr, sc = SAFE_START_RC
+    for p in room.players.values():
+        room.ensure_player_arrays(p)
+        p.open = [False] * (ROWS * COLS)
+        p.flag = [False] * (ROWS * COLS)
+        p.revealed = 0
+        p.flags = 0
+        p.dead = False
+        p.finished_at = None
+
+        flood_open(room, p, sr, sc)
+        check_finish(room, p)
+
+
+def end_match(room: Room, winner_session: Optional[str], reason: str) -> None:
+    room.status = "ended"
+    room.winner_session = winner_session
+    room.end_reason = reason
+    room.deadline_at = None
+
+
+def winner_name(room: Room) -> str:
+    if not room.winner_session:
+        return "—"
+    p = room.players.get(room.winner_session)
+    return p.name if p else "—"
+
+
+# =============================================================================
+# Server timer task: closes matches on timeout
+# =============================================================================
+
+TIMER_TASK: Optional[asyncio.Task] = None
+
+
+async def timer_loop() -> None:
+    while True:
+        await asyncio.sleep(0.5)
+        async with ROOMS_GUARD:
+            rooms = list(ROOMS.values())
+        for room in rooms:
+            if room.status != "running" or room.deadline_at is None:
+                continue
+            if now_s() < room.deadline_at:
+                continue
+            async with room.lock:
+                if room.status != "running" or room.deadline_at is None:
+                    continue
+                if now_s() < room.deadline_at:
+                    continue
+                # if someone already solved, end should have happened via move; still guard
+                if room.winner_session:
+                    end_match(room, room.winner_session, "solved")
+                else:
+                    wsid = compute_winner_on_timeout(room)
+                    end_match(room, wsid, "timeout")
+                await broadcast_room(room)
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    global TIMER_TASK
+    if TIMER_TASK is None:
+        TIMER_TASK = asyncio.create_task(timer_loop())
+
+
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    global TIMER_TASK
+    if TIMER_TASK is not None:
+        TIMER_TASK.cancel()
+        TIMER_TASK = None
+
+
+# =============================================================================
+# HTML UI (Lux themes: 3 winter + 3 summer)
+# =============================================================================
+
+SNOWMINES_HTML = r"""<!doctype html>
+<html lang="lt">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Hestio SnowMines — Competition 30×20</title>
+  <style>
+    :root{
+      --bg0:#07131a;
+      --bg1:#0b1b24;
+      --panel: rgba(18, 26, 34, .78);
+      --panel2: rgba(12, 18, 25, .82);
+      --text: #eef6ff;
+      --muted: rgba(238,246,255,.72);
+      --stroke: rgba(238,246,255,.14);
+
+      --accent: #cfe6ff;
+      --accent2:#ffffff;
+
+      --tile1: rgba(223,239,255,.92);
+      --tile2: rgba(168,198,232,.84);
+
+      --moundA: rgba(255,255,255,.92);
+      --moundB: rgba(243,251,255,.78);
+      --moundC: rgba(170,200,230,.55);
+
+      --frameTop:#2b3d4b;
+      --frameBot:#15222c;
+      --insetTop:#0e202b;
+      --insetBot:#0a141c;
+
+      --flag1: rgba(255,90,105,.95);
+      --flag2: rgba(180,25,40,.95);
+    }
+
+    html, body { height: 100%; }
+    body{
+      margin:0;
+      background:
+        radial-gradient(1100px 700px at 18% 10%, rgba(207,230,255,.14), transparent 60%),
+        radial-gradient(900px 600px at 100% 20%, rgba(255,255,255,.08), transparent 60%),
+        radial-gradient(800px 700px at 40% 100%, rgba(140,220,255,.07), transparent 62%),
+        linear-gradient(180deg, var(--bg0), var(--bg1));
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      overflow: hidden;
+    }
+
+    .app{
+      display:grid;
+      grid-template-columns: 460px 1fr;
+      height:100%;
+      gap: 18px;
+      padding: 18px;
+      box-sizing: border-box;
+    }
+
+    @media (max-width: 1120px){
+      body{ overflow:auto; }
+      .app{ grid-template-columns: 1fr; height:auto; }
+      #boardWrap{ min-height: 620px; }
+    }
+
+    .card{
+      background: var(--panel);
+      border: 1px solid var(--stroke);
+      border-radius: 22px;
+      box-shadow:
+        0 30px 90px rgba(0,0,0,.42),
+        inset 0 1px 0 rgba(255,255,255,.06);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+    }
+
+    .side{
+      padding: 16px;
+      display:flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 620px;
+    }
+
+    .title{
+      padding: 16px 16px 10px 16px;
+      border-radius: 22px;
+      background:
+        radial-gradient(780px 260px at 0% 0%, rgba(207,230,255,.20), transparent 62%),
+        linear-gradient(180deg, rgba(255,255,255,.06), transparent);
+      border: 1px solid rgba(255,255,255,.08);
+    }
+    .title h1{
+      margin:0;
+      font-size: 18px;
+      letter-spacing: .6px;
+      font-weight: 720;
+    }
+    .title p{
+      margin:6px 0 0 0;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    .row{ display:flex; gap:10px; flex-wrap: wrap; align-items: center; }
+    .kpi{
+      flex: 1 1 210px;
+      padding: 12px 12px;
+      border-radius: 18px;
+      background: var(--panel2);
+      border: 1px solid var(--stroke);
+    }
+    .kpi .label{ font-size: 11px; color: var(--muted); }
+    .kpi .value{ font-size: 14px; margin-top: 6px; font-weight: 650; line-height: 1.25; }
+
+    .controls{
+      padding: 12px;
+      border-radius: 18px;
+      background: var(--panel2);
+      border: 1px solid var(--stroke);
+      display:flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .grid2{ display:grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .grid3{ display:grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+    .grid4{ display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 10px; }
+
+    button, select, input{
+      appearance: none;
+      background: rgba(255,255,255,.06);
+      border: 1px solid rgba(255,255,255,.12);
+      color: var(--text);
+      padding: 10px 12px;
+      border-radius: 14px;
+      font-size: 13px;
+      outline: none;
+      transition: transform .08s ease, border-color .18s ease, background .18s ease;
+      box-sizing: border-box;
+    }
+    button{ cursor: pointer; }
+    input{ width: 100%; }
+    button:hover, select:hover, input:hover{ border-color: rgba(255,255,255,.22); background: rgba(255,255,255,.08); }
+    button:active{ transform: translateY(1px); }
+    button.primary{
+      background: linear-gradient(180deg, rgba(207,230,255,.22), rgba(207,230,255,.08));
+      border-color: rgba(207,230,255,.42);
+    }
+    button.danger{
+      background: linear-gradient(180deg, rgba(255,90,105,.22), rgba(255,90,105,.08));
+      border-color: rgba(255,90,105,.38);
+    }
+    button:disabled{ opacity:.55; cursor:not-allowed; }
+
+    .hr{ height:1px; background: rgba(255,255,255,.08); margin: 6px 0; }
+
+    .status{
+      padding: 12px;
+      border-radius: 18px;
+      background: linear-gradient(180deg, rgba(255,255,255,.05), transparent);
+      border: 1px solid rgba(255,255,255,.10);
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.55;
+      min-height: 120px;
+    }
+    .status strong{ color: var(--text); font-weight: 650; }
+
+    .pill{
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,.12);
+      background: rgba(255,255,255,.05);
+      font-size: 12px;
+      color: var(--muted);
+      user-select:none;
+      white-space: nowrap;
+    }
+    a.pill{ text-decoration:none; }
+    .dot{
+      width: 10px; height: 10px;
+      border-radius: 999px;
+      box-shadow: 0 0 0 2px rgba(255,255,255,.08), 0 0 18px rgba(207,230,255,.20);
+      background: rgba(207,230,255,.9);
+    }
+    .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; letter-spacing: .6px; }
+
+    #boardWrap{
+      position: relative;
+      padding: 16px;
+      border-radius: 22px;
+      overflow: hidden;
+      min-height: 720px;
+    }
+    #canvas{
+      width: 100%;
+      height: 100%;
+      display:block;
+      border-radius: 22px;
+      touch-action: manipulation;
+    }
+
+    .watermark{
+      position:absolute;
+      right: 18px;
+      bottom: 14px;
+      font-size: 12px;
+      color: rgba(238,246,255,.35);
+      letter-spacing: .6px;
+      user-select: none;
+    }
+
+    .leader{
+      display:flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .leaderItem{
+      display:flex;
+      align-items:center;
+      justify-content: space-between;
+      padding: 10px 10px;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,.10);
+      background: rgba(255,255,255,.04);
+      font-size: 12px;
+      color: rgba(238,246,255,.78);
+    }
+    .leaderItem strong{
+      color: var(--text);
+      font-weight: 650;
+    }
+    .badge{
+      display:inline-flex;
+      align-items:center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,.12);
+      background: rgba(255,255,255,.06);
+      font-size: 12px;
+      color: rgba(238,246,255,.78);
+    }
+  </style>
+</head>
+
+<body>
+  <div class="app">
+    <div class="side card">
+      <div class="title">
+        <h1>Hestio SnowMines — Competition (1–10)</h1>
+        <p>30×20. Visi žaidėjai sprendžia <strong>tą pačią lentą</strong>. Pradžioje atveriamas bendras saugus centras. Laimi tas, kas <strong>greičiausiai išsprendžia</strong> (arba pagal progresą, jei baigiasi laikas).</p>
+        <div class="row" style="margin-top:10px;"><a class="pill" href="/play">Back to HestioPlay</a></div>
+      </div>
+
+      <div class="row">
+        <div class="kpi">
+          <div class="label">Jūs / Kambarys</div>
+          <div class="value" id="youLabel">—</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Laikas / Statusas</div>
+          <div class="value" id="timeLabel">—</div>
+        </div>
+      </div>
+
+      <div class="controls">
+        <div class="grid2">
+          <button class="primary" id="createBtn">Sukurti lobby</button>
+          <button id="copyBtn">Kopijuoti nuorodą</button>
+        </div>
+
+        <div class="grid2">
+          <input id="roomInput" class="mono" placeholder="Kambarys (pvz. A7KD)" maxlength="8" />
+          <button id="joinBtn">Prisijungti</button>
+        </div>
+
+        <div class="grid3">
+          <input id="nameInput" placeholder="Vardas (pvz. Mantas)" />
+          <select id="levelSel" title="Lygis">
+            <option value="easy">Lengvas</option>
+            <option value="medium" selected>Vidutinis</option>
+            <option value="hard">Sunkus</option>
+          </select>
+          <button id="startBtn" class="primary">Start</button>
+        </div>
+
+        <div class="grid2">
+          <select id="themeSel" title="Tema (tik vizualiai)"></select>
+          <button id="newLobbyBtn" class="danger">Naujas match</button>
+        </div>
+
+        <div class="hr"></div>
+
+        <div class="row">
+          <span class="pill"><span class="dot"></span><span id="connPill">Neprisijungta</span></span>
+          <span class="pill"><span class="dot"></span><span id="roomPill">Kambarys: —</span></span>
+          <span class="pill"><span class="dot"></span><span id="lvlPill">Lygis: —</span></span>
+          <span class="pill"><span class="dot"></span><span id="clockPill">Laikas: —</span></span>
+        </div>
+      </div>
+
+      <div class="status" id="statusBox">
+        <strong>Statusas:</strong> sukurkite arba įveskite kambario kodą.
+      </div>
+
+      <div class="controls">
+        <div class="row" style="justify-content: space-between;">
+          <span class="badge" id="winnerBadge">Nugalėtojas: —</span>
+          <span class="badge" id="youProgress">Progresas: —</span>
+        </div>
+        <div class="leader" id="leader"></div>
+      </div>
+    </div>
+
+    <div id="boardWrap" class="card">
+      <canvas id="canvas"></canvas>
+      <div class="watermark">Hestio • SnowMines</div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  "use strict";
+
+  const COLS = 30;
+  const ROWS = 20;
+
+  // Luxury themes: 3 winter + 3 summer
+  // Note: theme is client-side only; gameplay is server authoritative.
+  const THEMES = {
+    // Winter
+    winter_glacier: {
+      label: "Winter — Glacier Platinum",
+      bg0:"#07131a", bg1:"#0b1b24",
+      accent:"#cfe6ff", accent2:"#ffffff",
+      tile1:"rgba(223,239,255,.92)", tile2:"rgba(168,198,232,.84)",
+      moundA:"rgba(255,255,255,.94)", moundB:"rgba(244,252,255,.80)", moundC:"rgba(170,200,230,.56)",
+      frameTop:"#2b3d4b", frameBot:"#15222c", insetTop:"#0e202b", insetBot:"#0a141c",
+      flag1:"rgba(255,90,105,.95)", flag2:"rgba(180,25,40,.95)"
+    },
+    winter_aurora: {
+      label: "Winter — Aurora Silk",
+      bg0:"#061014", bg1:"#071f1a",
+      accent:"#baf5e7", accent2:"#eafcff",
+      tile1:"rgba(219,248,242,.90)", tile2:"rgba(140,213,206,.82)",
+      moundA:"rgba(255,255,255,.92)", moundB:"rgba(236,255,250,.78)", moundC:"rgba(150,220,210,.52)",
+      frameTop:"#214a42", frameBot:"#0f2a24", insetTop:"#0b2621", insetBot:"#071b18",
+      flag1:"rgba(255,115,125,.95)", flag2:"rgba(190,35,55,.95)"
+    },
+    winter_royal: {
+      label: "Winter — Royal Sapphire",
+      bg0:"#070b16", bg1:"#0b122a",
+      accent:"#cdd9ff", accent2:"#ffffff",
+      tile1:"rgba(226,234,255,.90)", tile2:"rgba(154,176,230,.84)",
+      moundA:"rgba(255,255,255,.92)", moundB:"rgba(243,246,255,.78)", moundC:"rgba(150,175,235,.56)",
+      frameTop:"#283a6a", frameBot:"#141e3d", insetTop:"#0e1a33", insetBot:"#0a1327",
+      flag1:"rgba(255,95,110,.95)", flag2:"rgba(180,25,40,.95)"
+    },
+
+    // Summer
+    summer_sand: {
+      label: "Summer — Sand Dune Gold",
+      bg0:"#0e0d0a", bg1:"#19150f",
+      accent:"#ffd9a0", accent2:"#fff3dd",
+      tile1:"rgba(255,244,225,.92)", tile2:"rgba(232,205,165,.84)",
+      moundA:"rgba(255,248,236,.92)", moundB:"rgba(247,232,206,.78)", moundC:"rgba(200,165,120,.58)",
+      frameTop:"#4a3623", frameBot:"#2b1f15", insetTop:"#241a12", insetBot:"#17100b",
+      flag1:"rgba(255,90,105,.95)", flag2:"rgba(180,25,40,.95)"
+    },
+    summer_lagoon: {
+      label: "Summer — Lagoon Pearl",
+      bg0:"#061014", bg1:"#0b1717",
+      accent:"#bff7ff", accent2:"#ffffff",
+      tile1:"rgba(226,252,255,.90)", tile2:"rgba(158,222,230,.84)",
+      moundA:"rgba(250,255,255,.92)", moundB:"rgba(232,252,255,.78)", moundC:"rgba(140,205,215,.56)",
+      frameTop:"#245059", frameBot:"#102d33", insetTop:"#0c262a", insetBot:"#081a1d",
+      flag1:"rgba(255,100,115,.95)", flag2:"rgba(185,25,45,.95)"
+    },
+    summer_olive: {
+      label: "Summer — Olive Marble",
+      bg0:"#0b0f0a", bg1:"#121a10",
+      accent:"#d7f0c6", accent2:"#ffffff",
+      tile1:"rgba(238,252,230,.90)", tile2:"rgba(175,212,160,.84)",
+      moundA:"rgba(252,255,246,.92)", moundB:"rgba(238,252,235,.78)", moundC:"rgba(160,200,145,.56)",
+      frameTop:"#31422a", frameBot:"#1b2417", insetTop:"#141f12", insetBot:"#0e160d",
+      flag1:"rgba(255,95,110,.95)", flag2:"rgba(180,25,40,.95)"
+    }
+  };
+
+  const THEME_ORDER = [
+    "winter_glacier","winter_aurora","winter_royal",
+    "summer_sand","summer_lagoon","summer_olive"
+  ];
+
+  const NUM_COLORS = {
+    1: "#1c6fb8",
+    2: "#2a8e4b",
+    3: "#c53a37",
+    4: "#6a49d6",
+    5: "#a06a2a",
+    6: "#1e8b8d",
+    7: "#1c1f2a",
+    8: "#596075"
+  };
+
+  const state = {
+    // connection
+    ws: null,
+    connected: false,
+    sessionId: null,
+    room: null,
+    summary: null,
+
+    // player view
+    grid: null, // flattened ints (len ROWS*COLS), or null in lobby
+
+    // UI
+    themeKey: "winter_glacier",
+    dpr: 1,
+    layout: null,
+    noise: null,
+    decoSeeds: [],
+    lastPointerDownAt: 0,
+    _clientNowAtState: null
+  };
+
+  // DOM
+  const canvas = document.getElementById("canvas");
+  const ctx = canvas.getContext("2d", { alpha: false });
+
+  const youLabel = document.getElementById("youLabel");
+  const timeLabel = document.getElementById("timeLabel");
+  const connPill = document.getElementById("connPill");
+  const roomPill = document.getElementById("roomPill");
+  const lvlPill = document.getElementById("lvlPill");
+  const clockPill = document.getElementById("clockPill");
+  const statusBox = document.getElementById("statusBox");
+
+  const createBtn = document.getElementById("createBtn");
+  const copyBtn = document.getElementById("copyBtn");
+  const joinBtn = document.getElementById("joinBtn");
+  const roomInput = document.getElementById("roomInput");
+
+  const nameInput = document.getElementById("nameInput");
+function preferredNick(){ try{ return localStorage.getItem("hestio_nick")||""; }catch(e){ return ""; } }
+function persistNick(n){ try{ localStorage.setItem("hestio_nick", n); }catch(e){} }
+
+// Nick prefill: ?nick=... > localStorage("hestio_nick")
+try{
+  const qp = new URLSearchParams(location.search);
+  const qpNick = (qp.get("nick")||"").trim();
+  if(qpNick){
+    nameInput.value = qpNick.slice(0,24);
+    persistNick(nameInput.value);
+  }else{
+    const pn = preferredNick();
+    if(pn && !nameInput.value) nameInput.value = pn.slice(0,24);
+  }
+}catch(e){}
+  const levelSel = document.getElementById("levelSel");
+  const startBtn = document.getElementById("startBtn");
+  const newLobbyBtn = document.getElementById("newLobbyBtn");
+  const themeSel = document.getElementById("themeSel");
+
+  const leader = document.getElementById("leader");
+  const winnerBadge = document.getElementById("winnerBadge");
+  const youProgress = document.getElementById("youProgress");
+
+  // utils
+  const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
+  const inb = (r,c) => r>=0 && r<ROWS && c>=0 && c<COLS;
+  const idx = (r,c) => r*COLS + c;
+
+  function setStatus(html){
+    statusBox.innerHTML = `<strong>Statusas:</strong> ${html}`;
+  }
+
+  function ensureSession(){
+    let sid = localStorage.getItem("hestio_snowmines_session");
+    if (!sid){
+      sid = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2) + String(Date.now()));
+      localStorage.setItem("hestio_snowmines_session", sid);
+    }
+    state.sessionId = sid;
+  }
+
+  function wsUrl(){
+    const proto = (location.protocol === "https:") ? "wss" : "ws";
+    return `${proto}://${location.host}/play/snowmines/ws`;
+  }
+
+  function send(msg){
+    if (!state.ws || state.ws.readyState !== 1) return;
+    state.ws.send(JSON.stringify(msg));
+  }
+
+  function connect(mode, code){
+    if (state.ws){
+      try { state.ws.close(); } catch(e) {}
+      state.ws = null;
+    }
+    const ws = new WebSocket(wsUrl());
+    state.ws = ws;
+
+    ws.onopen = () => {
+      state.connected = true;
+      updateHUD();
+      if (mode === "create"){
+        send({type:"create", sessionId: state.sessionId});
+      } else {
+        send({type:"join", sessionId: state.sessionId, room: code});
+      }
+      setStatus("Jungiama…");
+    };
+
+    ws.onmessage = (ev) => {
+      let msg = null;
+      try { msg = JSON.parse(ev.data); } catch(e){ return; }
+
+      if (msg.type === "joined"){
+        state.room = msg.room;
+        if (state.room){
+          const url = new URL(location.href);
+          url.hash = `room=${state.room}`;
+          history.replaceState(null, "", url.toString());
+        }
+        setStatus(`Prisijungta prie lobby: <span class="mono">${state.room}</span>.`);
+        if (msg.summary) applyState(msg.summary, msg.grid);
+        // send name if present
+        const nm = (nameInput.value || "").trim();
+        if (nm) send({type:"setName", room: state.room, name: nm});
+        return;
+      }
+
+      if (msg.type === "state"){
+        applyState(msg.summary, msg.grid);
+        return;
+      }
+
+      if (msg.type === "error"){
+        setStatus(`<strong>Klaida:</strong> ${msg.message}`);
+        return;
+      }
+    };
+
+    ws.onclose = () => {
+      state.connected = false;
+      updateHUD();
+      setStatus("Ryšys nutrūko.");
+    };
+
+    ws.onerror = () => {
+      state.connected = false;
+      updateHUD();
+      setStatus("Ryšio klaida.");
+    };
+  }
+
+  function applyState(summary, grid){
+    state.summary = summary;
+    state.grid = grid || null;
+    state._clientNowAtState = Date.now()/1000;
+    updateHUD();
+  }
+
+  function fmtTime(sec){
+    sec = Math.max(0, Math.floor(sec));
+    const m = Math.floor(sec/60);
+    const s = sec%60;
+    return `${m}:${String(s).padStart(2,"0")}`;
+  }
+
+  function approxServerNow(){
+    if (!state.summary || !state.summary.serverNow) return Date.now()/1000;
+    const clientNow = Date.now()/1000;
+    const offset = state.summary.serverNow - (state._clientNowAtState || clientNow);
+    return clientNow + offset;
+  }
+
+  function updateHUD(){
+    connPill.textContent = state.connected ? "Prisijungta" : "Neprisijungta";
+    roomPill.textContent = `Kambarys: ${state.room ? state.room : "—"}`;
+
+    const you = state.sessionId ? state.sessionId.slice(0,8) : "—";
+    if (!state.summary){
+      youLabel.innerHTML = `${(nameInput.value||"Jūs").trim() || "Jūs"}<br/><span class="mono">—</span>`;
+      lvlPill.textContent = "Lygis: —";
+      timeLabel.textContent = "—";
+      clockPill.textContent = "Laikas: —";
+      winnerBadge.textContent = "Nugalėtojas: —";
+      youProgress.textContent = "Progresas: —";
+      leader.innerHTML = "";
+      startBtn.disabled = true;
+      levelSel.disabled = true;
+      newLobbyBtn.disabled = true;
+      return;
+    }
+
+    const s = state.summary;
+    lvlPill.textContent = `Lygis: ${s.levelLabel} • minos ${s.mines} • 30×20`;
+
+    // host controls
+    const isHost = (s.host === state.sessionId);
+    levelSel.disabled = !isHost || s.status !== "lobby";
+    startBtn.disabled = !isHost || s.status !== "lobby" || (s.players.length < 1);
+    newLobbyBtn.disabled = !isHost;
+
+    levelSel.value = s.levelKey;
+
+    // time
+    if (s.status === "lobby"){
+      timeLabel.textContent = "Lobby";
+      clockPill.textContent = `Laikas: ${fmtTime(s.timeS)}`;
+    } else if (s.status === "running"){
+      const left = s.deadlineAt ? (s.deadlineAt - approxServerNow()) : 0;
+      timeLabel.textContent = `Vyksta • likę ${fmtTime(left)}`;
+      clockPill.textContent = `Laikas: ${fmtTime(left)}`;
+    } else {
+      timeLabel.textContent = `Baigta • ${s.endReason === "solved" ? "išspręsta" : "laikas baigėsi"}`;
+      clockPill.textContent = "Laikas: 0:00";
+    }
+
+    // winner badge
+    let wn = "—";
+    if (s.winnerSession){
+      const p = s.players.find(pp => pp.session === s.winnerSession);
+      wn = p ? p.name : "—";
+    }
+    winnerBadge.textContent = `Nugalėtojas: ${wn}`;
+
+    // you label & progress
+    const me = s.players.find(pp => pp.session === state.sessionId);
+    const meName = (me && me.name) ? me.name : ((nameInput.value||"Jūs").trim() || "Jūs");
+    youLabel.innerHTML = `${meName}<br/><span class="mono">${state.room || "—"}</span>`;
+
+    if (me){
+      const totalNonMines = (30*20) - s.mines;
+      const pct = totalNonMines > 0 ? Math.floor((me.revealed / totalNonMines) * 100) : 0;
+      const fin = me.finishedAt != null ? ` • ${fmtTime(me.finishedAt)}` : "";
+      const dead = me.dead ? " • BOOM" : "";
+      youProgress.textContent = `Progresas: ${me.revealed}/${totalNonMines} (${pct}%)${fin}${dead}`;
+    } else {
+      youProgress.textContent = "Progresas: —";
+    }
+
+    // leaderboard
+    const sorted = [...s.players].sort((a,b) => {
+      // finished first wins, else highest revealed, else earlier join
+      const af = (a.finishedAt==null) ? 1e18 : a.finishedAt;
+      const bf = (b.finishedAt==null) ? 1e18 : b.finishedAt;
+      if (af !== bf) return af - bf;
+      if (a.revealed !== b.revealed) return b.revealed - a.revealed;
+      return 0;
+    });
+
+    leader.innerHTML = "";
+    for (let i=0;i<sorted.length;i++){
+      const p = sorted[i];
+      const el = document.createElement("div");
+      el.className = "leaderItem";
+      const tag = p.isHost ? " • host" : "";
+      const fin = p.finishedAt != null ? ` • ${fmtTime(p.finishedAt)}` : "";
+      const dead = p.dead ? " • BOOM" : "";
+      el.innerHTML = `<div><strong>${i+1}. ${escapeHtml(p.name)}</strong>${tag}${dead}</div><div>${p.revealed}${fin}</div>`;
+      leader.appendChild(el);
+    }
+
+    // status box text
+    if (s.status === "lobby"){
+      setStatus(`Lobby atidarytas. Dalyviai: <strong>${s.players.length}</strong>/10. Host paspaudžia <strong>Start</strong>.`);
+    } else if (s.status === "running"){
+      setStatus(`Vyksta match. Visi sprendžia tą pačią lentą. Kairys click — atidengti, dešinys click (arba ilgai paliesti) — vėliava, dvigubas click — chord.`);
+    } else {
+      const reason = s.endReason === "solved" ? "Išspręsta" : "Baigėsi laikas";
+      setStatus(`${reason}. Nugalėtojas: <strong>${wn}</strong>. Host gali paspausti <strong>Naujas match</strong>.`);
+    }
+  }
+
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
+    })[c]);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Theme application
+  // ---------------------------------------------------------------------------
+  function populateThemes(){
+    themeSel.innerHTML = "";
+    for (const key of THEME_ORDER){
+      const opt = document.createElement("option");
+      opt.value = key;
+      opt.textContent = THEMES[key].label;
+      themeSel.appendChild(opt);
+    }
+    themeSel.value = state.themeKey;
+  }
+
+  function applyTheme(key){
+    state.themeKey = key;
+    const t = THEMES[key];
+    const r = document.documentElement.style;
+    r.setProperty("--bg0", t.bg0);
+    r.setProperty("--bg1", t.bg1);
+    r.setProperty("--accent", t.accent);
+    r.setProperty("--accent2", t.accent2);
+    r.setProperty("--tile1", t.tile1);
+    r.setProperty("--tile2", t.tile2);
+    r.setProperty("--moundA", t.moundA);
+    r.setProperty("--moundB", t.moundB);
+    r.setProperty("--moundC", t.moundC);
+    r.setProperty("--frameTop", t.frameTop);
+    r.setProperty("--frameBot", t.frameBot);
+    r.setProperty("--insetTop", t.insetTop);
+    r.setProperty("--insetBot", t.insetBot);
+    r.setProperty("--flag1", t.flag1);
+    r.setProperty("--flag2", t.flag2);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Rendering: "mounds" + ambiguous decor
+  // ---------------------------------------------------------------------------
+  function ensureNoise(){
+    if (state.noise) return;
+    const nc = document.createElement("canvas");
+    nc.width = 320; nc.height = 320;
+    const nctx = nc.getContext("2d");
+    const img = nctx.createImageData(nc.width, nc.height);
+    for (let i=0;i<img.data.length;i+=4){
+      const v = (Math.random()*255)|0;
+      img.data[i]=v; img.data[i+1]=v; img.data[i+2]=v; img.data[i+3]=20;
+    }
+    nctx.putImageData(img,0,0);
+    state.noise = nc;
+  }
+
+  function resize(){
+    const rect = canvas.getBoundingClientRect();
+    state.dpr = clamp(window.devicePixelRatio || 1, 1, 2.5);
+
+    canvas.width = Math.floor(rect.width * state.dpr);
+    canvas.height = Math.floor(rect.height * state.dpr);
+
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.scale(state.dpr, state.dpr);
+
+    const pad = 26;
+    const w = rect.width - pad*2;
+    const h = rect.height - pad*2;
+
+    const cell = Math.floor(Math.min(w / COLS, h / ROWS));
+    const gridW = cell * COLS;
+    const gridH = cell * ROWS;
+    const x = Math.floor((rect.width - gridW)/2);
+    const y = Math.floor((rect.height - gridH)/2);
+    state.layout = { x, y, cell, gridW, gridH, w: rect.width, h: rect.height };
+
+    // decor seeds: blur edges and create mound-vs-decor ambiguity
+    state.decoSeeds = [];
+    for (let i=0;i<200;i++){
+      state.decoSeeds.push({
+        x: Math.random(), y: Math.random(),
+        r: 0.008 + Math.random()*0.02,
+        a: 0.05 + Math.random()*0.12
+      });
+    }
+
+    ensureNoise();
+  }
+
+  function rr(x,y,w,h,r){
+    ctx.beginPath();
+    ctx.moveTo(x+r,y);
+    ctx.arcTo(x+w,y,x+w,y+h,r);
+    ctx.arcTo(x+w,y+h,x,y+h,r);
+    ctx.arcTo(x,y+h,x,y,r);
+    ctx.arcTo(x,y,x+w,y,r);
+    ctx.closePath();
+  }
+
+  function css(name, fallback){
+    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return v || fallback;
+  }
+
+  function drawBackground(){
+    const {w,h} = state.layout;
+    const g = ctx.createLinearGradient(0,0,0,h);
+    g.addColorStop(0, css("--bg0","#07131a"));
+    g.addColorStop(1, css("--bg1","#0b1b24"));
+    ctx.fillStyle = g;
+    ctx.fillRect(0,0,w,h);
+
+    const s1 = ctx.createRadialGradient(w*0.20, h*0.12, 0, w*0.20, h*0.12, Math.min(w,h)*0.75);
+    s1.addColorStop(0, "rgba(255,255,255,.08)");
+    s1.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = s1; ctx.fillRect(0,0,w,h);
+  }
+
+  function drawDecorativeMounds(x,y,w,h,cell){
+    ctx.save();
+    for (const s of state.decoSeeds){
+      const px = x + w*s.x;
+      const py = y + h*s.y;
+      const edge = Math.min(s.x, 1-s.x, s.y, 1-s.y);
+      if (edge > 0.18) continue;
+
+      const r = (cell*2.4) * s.r;
+      const g = ctx.createRadialGradient(px-r*0.3, py-r*0.4, r*0.2, px, py, r*1.2);
+      g.addColorStop(0, css("--moundA","rgba(255,255,255,.72)"));
+      g.addColorStop(0.55, css("--moundB","rgba(240,250,255,.38)"));
+      g.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.ellipse(px, py, r*1.2, r*0.95, (Math.random()*0.6)-0.3, 0, Math.PI*2);
+      ctx.globalAlpha = 0.9;
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawFrame(){
+    const {x,y,gridW,gridH,cell} = state.layout;
+    const pad = Math.max(18, cell*0.45);
+
+    ctx.save();
+    ctx.shadowColor = "rgba(0,0,0,.45)";
+    ctx.shadowBlur = 40;
+    ctx.shadowOffsetY = 24;
+    rr(x-pad, y-pad, gridW+pad*2, gridH+pad*2, 24);
+    const frame = ctx.createLinearGradient(x-pad, y-pad, x-pad, y+gridH+pad);
+    frame.addColorStop(0, css("--frameTop","#2b3d4b"));
+    frame.addColorStop(1, css("--frameBot","#15222c"));
+    ctx.fillStyle = frame;
+    ctx.fill();
+    ctx.restore();
+
+    rr(x-10, y-10, gridW+20, gridH+20, 20);
+    const inset = ctx.createLinearGradient(x, y-10, x, y+gridH+10);
+    inset.addColorStop(0, css("--insetTop","#0e202b"));
+    inset.addColorStop(1, css("--insetBot","#0a141c"));
+    ctx.fillStyle = inset;
+    ctx.fill();
+
+    drawDecorativeMounds(x-pad, y-pad, gridW+pad*2, gridH+pad*2, cell);
+  }
+
+  function cellRect(r,c){
+    const {x,y,cell} = state.layout;
+    return { x0: x + c*cell, y0: y + r*cell, w: cell };
+  }
+
+  function drawCoveredCell(r,c){
+    const {x0,y0,w} = cellRect(r,c);
+    const pad = w*0.10;
+
+    // subtle tile base
+    ctx.save();
+    ctx.globalAlpha = 0.10;
+    ctx.fillStyle = "rgba(255,255,255,.35)";
+    ctx.fillRect(x0+1, y0+1, w-2, w-2);
+    ctx.restore();
+
+    const cx = x0 + w*0.52 + (Math.sin((r*7+c*11)*0.2)*w*0.03);
+    const cy = y0 + w*0.58 + (Math.cos((r*5+c*9)*0.18)*w*0.03);
+    const rx = w*0.54;
+    const ry = w*0.44;
+
+    ctx.save();
+
+    // shadow
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + ry*0.35, rx*0.80, ry*0.38, 0, 0, Math.PI*2);
+    ctx.fillStyle = "rgba(0,0,0,.28)";
+    ctx.filter = `blur(${Math.max(2, w*0.10)}px)`;
+    ctx.fill();
+    ctx.filter = "none";
+
+    // mound
+    const g = ctx.createRadialGradient(cx-rx*0.25, cy-ry*0.35, rx*0.18, cx, cy, rx*1.2);
+    g.addColorStop(0, css("--moundA","rgba(255,255,255,.92)"));
+    g.addColorStop(0.55, css("--moundB","rgba(243,251,255,.78)"));
+    g.addColorStop(1, css("--moundC","rgba(170,200,230,.55)"));
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI*2);
+    ctx.fill();
+
+    // rim highlight
+    ctx.strokeStyle = "rgba(255,255,255,.30)";
+    ctx.lineWidth = Math.max(1, w*0.06);
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rx*0.96, ry*0.92, 0, 0, Math.PI*2);
+    ctx.stroke();
+
+    // texture (adds ambiguity)
+    ctx.save();
+    ctx.globalAlpha = 0.10;
+    ctx.drawImage(state.noise, x0-pad, y0-pad, w+pad*2, w+pad*2);
+    ctx.restore();
+
+    ctx.restore();
+  }
+
+  function drawOpenCell(r,c,val){
+    const {x0,y0,w} = cellRect(r,c);
+
+    ctx.save();
+    const g = ctx.createLinearGradient(x0, y0, x0+w, y0+w);
+    g.addColorStop(0, css("--tile1","rgba(223,239,255,.90)"));
+    g.addColorStop(1, css("--tile2","rgba(168,198,232,.82)"));
+    ctx.fillStyle = g;
+    ctx.fillRect(x0, y0, w, w);
+
+    ctx.strokeStyle = "rgba(0,0,0,.10)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x0+0.5, y0+0.5, w-1, w-1);
+
+    ctx.globalAlpha = 0.12;
+    ctx.drawImage(state.noise, x0, y0, w, w);
+    ctx.globalAlpha = 1.0;
+    ctx.restore();
+
+    if (val === -1){
+      drawMine(x0+w*0.5, y0+w*0.53, w);
+    } else if (val > 0){
+      drawNumber(x0+w*0.5, y0+w*0.56, w, val);
+    }
+  }
+
+  function drawFlag(x,y,size){
+    ctx.save();
+    ctx.shadowColor = "rgba(0,0,0,.25)";
+    ctx.shadowBlur = size*0.22;
+    ctx.shadowOffsetY = size*0.10;
+
+    // pole
+    ctx.strokeStyle = "rgba(20,25,30,.55)";
+    ctx.lineWidth = Math.max(2, size*0.08);
+    ctx.beginPath();
+    ctx.moveTo(x, y-size*0.28);
+    ctx.lineTo(x, y+size*0.26);
+    ctx.stroke();
+
+    const g = ctx.createLinearGradient(x, y-size*0.26, x+size*0.35, y+size*0.05);
+    g.addColorStop(0, css("--flag1","rgba(255,90,105,.95)"));
+    g.addColorStop(1, css("--flag2","rgba(180,25,40,.95)"));
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(x, y-size*0.24);
+    ctx.quadraticCurveTo(x+size*0.18, y-size*0.20, x+size*0.32, y-size*0.10);
+    ctx.quadraticCurveTo(x+size*0.20, y-size*0.04, x, y-size*0.02);
+    ctx.closePath();
+    ctx.fill();
+
+    // base
+    ctx.fillStyle = "rgba(15,20,25,.35)";
+    ctx.beginPath();
+    ctx.ellipse(x, y+size*0.30, size*0.18, size*0.08, 0, 0, Math.PI*2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  function drawMine(x,y,size){
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(x, y, size*0.22, 0, Math.PI*2);
+    const g = ctx.createRadialGradient(x-size*0.08, y-size*0.10, size*0.04, x, y, size*0.26);
+    g.addColorStop(0, "rgba(90,95,110,.95)");
+    g.addColorStop(0.55, "rgba(20,25,32,.95)");
+    g.addColorStop(1, "rgba(0,0,0,.95)");
+    ctx.fillStyle = g;
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(x+size*0.12, y-size*0.14, size*0.04, 0, Math.PI*2);
+    ctx.fillStyle = "rgba(255,170,70,.95)";
+    ctx.shadowColor = "rgba(255,170,70,.45)";
+    ctx.shadowBlur = size*0.18;
+    ctx.fill();
+
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = "rgba(0,0,0,.35)";
+    ctx.lineWidth = Math.max(1, size*0.05);
+    const sp = size*0.30;
+    const lines = [
+      [x-sp, y, x+sp, y],
+      [x, y-sp, x, y+sp],
+      [x-sp*0.72, y-sp*0.72, x+sp*0.72, y+sp*0.72],
+      [x-sp*0.72, y+sp*0.72, x+sp*0.72, y-sp*0.72]
+    ];
+    for (const L of lines){
+      ctx.beginPath();
+      ctx.moveTo(L[0], L[1]);
+      ctx.lineTo(L[2], L[3]);
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
+
+  function drawNumber(x,y,size,n){
+    ctx.save();
+    ctx.font = `700 ${Math.max(12, size*0.42)}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = NUM_COLORS[n] || "#1c6fb8";
+
+    ctx.shadowColor = "rgba(0,0,0,.25)";
+    ctx.shadowBlur = size*0.10;
+    ctx.shadowOffsetY = size*0.06;
+    ctx.fillText(String(n), x, y);
+
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = "rgba(255,255,255,.28)";
+    ctx.lineWidth = Math.max(1, size*0.05);
+    ctx.strokeText(String(n), x, y);
+    ctx.restore();
+  }
+
+  function draw(){
+    if (!state.layout){ requestAnimationFrame(draw); return; }
+
+    drawBackground();
+    drawFrame();
+
+    const {x,y,cell,gridW,gridH} = state.layout;
+
+    // soft mist overlay (adds ambiguity)
+    ctx.save();
+    rr(x-12, y-12, gridW+24, gridH+24, 18);
+    ctx.clip();
+    const mist = ctx.createLinearGradient(x, y, x, y+gridH);
+    mist.addColorStop(0, "rgba(255,255,255,.05)");
+    mist.addColorStop(1, "rgba(255,255,255,.01)");
+    ctx.fillStyle = mist;
+    ctx.fillRect(x-12, y-12, gridW+24, gridH+24);
+    ctx.restore();
+
+    // cells
+    for (let r=0;r<ROWS;r++){
+      for (let c=0;c<COLS;c++){
+        const i = idx(r,c);
+        const v = state.grid ? state.grid[i] : -3;
+        if (v >= 0 || v === -1){
+          drawOpenCell(r,c,v);
+        } else {
+          drawCoveredCell(r,c);
+          if (v === -2){
+            const rc = cellRect(r,c);
+            drawFlag(rc.x0 + rc.w*0.52, rc.y0 + rc.w*0.52, rc.w);
+          }
+        }
+      }
+    }
+
+    // inner border
+    ctx.save();
+    rr(x-1, y-1, gridW+2, gridH+2, 18);
+    ctx.strokeStyle = "rgba(255,255,255,.10)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.restore();
+
+    requestAnimationFrame(draw);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Input handling (only when running)
+  // ---------------------------------------------------------------------------
+  function canPlay(){
+    return state.summary && state.summary.status === "running" && !!state.grid;
+  }
+
+  function posToCell(px,py){
+    const {x,y,cell,gridW,gridH} = state.layout;
+    if (px < x || py < y || px > x+gridW || py > y+gridH) return null;
+    const c = Math.floor((px-x)/cell);
+    const r = Math.floor((py-y)/cell);
+    if (!inb(r,c)) return null;
+    return {r,c};
+  }
+
+  function openAction(r,c){
+    if (!canPlay()) return;
+    send({type:"open", room: state.room, r, c});
+  }
+  function flagAction(r,c){
+    if (!canPlay()) return;
+    send({type:"flag", room: state.room, r, c});
+  }
+  function chordAction(r,c){
+    if (!canPlay()) return;
+    send({type:"chord", room: state.room, r, c});
+  }
+
+  canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+  canvas.addEventListener("pointerdown", (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const py = e.clientY - rect.top;
+    const p = posToCell(px,py);
+    state.lastPointerDownAt = Date.now();
+    if (!p) return;
+
+    canvas.setPointerCapture(e.pointerId);
+
+    if (e.button === 2){
+      flagAction(p.r,p.c);
+      return;
+    }
+    if (e.button === 0){
+      openAction(p.r,p.c);
+      return;
+    }
+  }, {passive:true});
+
+  canvas.addEventListener("pointerup", (e) => {
+    if (e.pointerType === "touch"){
+      const dt = Date.now() - state.lastPointerDownAt;
+      if (dt >= 420){
+        const rect = canvas.getBoundingClientRect();
+        const px = e.clientX - rect.left;
+        const py = e.clientY - rect.top;
+        const p = posToCell(px,py);
+        if (p) flagAction(p.r,p.c);
+      }
+    }
+  }, {passive:true});
+
+  canvas.addEventListener("dblclick", (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const py = e.clientY - rect.top;
+    const p = posToCell(px,py);
+    if (!p) return;
+    chordAction(p.r,p.c);
+  }, {passive:true});
+
+  // ---------------------------------------------------------------------------
+  // Buttons
+  // ---------------------------------------------------------------------------
+  createBtn.addEventListener("click", () => {
+    ensureSession();
+    connect("create");
+  });
+
+  joinBtn.addEventListener("click", () => {
+    ensureSession();
+    const code = (roomInput.value||"").trim().toUpperCase();
+    if (!code){ setStatus("Įveskite kambario kodą."); return; }
+    connect("join", code);
+  });
+
+  copyBtn.addEventListener("click", async () => {
+    if (!state.room){ setStatus("Nėra kambario kodo."); return; }
+    const url = new URL(location.href);
+    url.hash = `room=${state.room}`;
+    try{
+      await navigator.clipboard.writeText(url.toString());
+      setStatus("Nuoroda nukopijuota.");
+    } catch(e){
+      setStatus(`Kopijavimas nepavyko. Nuoroda: <span class="mono">${url.toString()}</span>`);
+    }
+  });
+
+  nameInput.addEventListener("change", () => {
+    const nm = (nameInput.value||"").trim();
+    if (!nm) return;
+    if (state.room) send({type:"setName", room: state.room, name: nm});
+  });
+
+  levelSel.addEventListener("change", () => {
+    if (!state.room) return;
+    send({type:"setLevel", room: state.room, levelKey: levelSel.value});
+  });
+
+  startBtn.addEventListener("click", () => {
+    if (!state.room) return;
+    send({type:"start", room: state.room});
+  });
+
+  newLobbyBtn.addEventListener("click", () => {
+    if (!state.room) return;
+    send({type:"resetLobby", room: state.room});
+  });
+
+  themeSel.addEventListener("change", () => {
+    applyTheme(themeSel.value);
+    setStatus(`Tema: <strong>${THEMES[themeSel.value].label}</strong>.`);
+  });
+
+  // clock tick for HUD
+  setInterval(() => {
+    if (state.summary && state.summary.status === "running"){
+      const left = state.summary.deadlineAt ? (state.summary.deadlineAt - approxServerNow()) : 0;
+      clockPill.textContent = `Laikas: ${fmtTime(left)}`;
+      timeLabel.textContent = `Vyksta • likę ${fmtTime(left)}`;
+    }
+  }, 250);
+
+  // Boot
+  ensureSession();
+  populateThemes();
+  applyTheme(state.themeKey);
+  resize();
+  requestAnimationFrame(draw);
+  window.addEventListener("resize", () => resize());
+
+  // Auto-join from URL hash
+  const m = (location.hash || "").match(/room=([A-Z0-9]+)/i);
+  if (m && m[1]){
+    const code = m[1].toUpperCase();
+    roomInput.value = code;
+    connect("join", code);
+  }
+
+})();
+</script>
+</body>
+</html>
+"""
+
+
+
+# -----------------------------
+# SnowMines sub-app (mounted)
+# -----------------------------
+
+snow_app = FastAPI(title="Hestio SnowMines — Competitive 30×20")
+app.mount("/play/snowmines", snow_app)
+
+@snow_app.get("/", response_class=HTMLResponse)
+def root() -> HTMLResponse:
+    return HTMLResponse(SNOWMINES_HTML)
+
+
+@snow_app.get("/health")
+def health() -> Response:
+    return Response("ok", media_type="text/plain")
+
+
+@snow_app.get("/version")
+def version() -> Response:
+    return Response(f"SnowMines competitive mines_main.py {time.strftime('%Y-%m-%d %H:%M:%S')}", media_type="text/plain")
+
+
+# =============================================================================
+# WebSocket endpoint
+# =============================================================================
+
+@snow_app.websocket("/ws")
+async def ws_endpoint(ws: WebSocket) -> None:
+    await ws.accept()
+
+    room: Optional[Room] = None
+    session_id: Optional[str] = None
+
+    try:
+        while True:
+            raw = await ws.receive_text()
+            try:
+                msg = json.loads(raw)
+            except Exception:
+                await ws_send(ws, {"type": "error", "message": "Blogas JSON."})
+                continue
+
+            mtype = msg.get("type")
+
+            # CREATE
+            if mtype == "create":
+                session_id = str(msg.get("sessionId") or "")
+                if not session_id:
+                    await ws_send(ws, {"type": "error", "message": "Trūksta sessionId."})
+                    continue
+                room = await create_room()
+                async with room.lock:
+                    # join as player
+                    if room.is_full():
+                        await ws_send(ws, {"type": "error", "message": "Lobby pilnas."})
+                        continue
+
+                    # reconnect?
+                    p = room.players.get(session_id)
+                    if p is None:
+                        p = Player(session_id=session_id)
+                        room.players[session_id] = p
+                    p.ws = ws
+                    p.last_seen = now_s()
+                    room.ensure_player_arrays(p)
+
+                    if room.host_session is None:
+                        room.host_session = session_id
+
+                    await ws_send(ws, {"type": "joined", "room": room.code, "summary": room_summary(room), "grid": None})
+                    await broadcast_room(room)
+                continue
+
+            # JOIN
+            if mtype == "join":
+                session_id = str(msg.get("sessionId") or "")
+                code = str(msg.get("room") or "").strip().upper()
+                if not session_id:
+                    await ws_send(ws, {"type": "error", "message": "Trūksta sessionId."})
+                    continue
+                if not code or len(code) > 8:
+                    await ws_send(ws, {"type": "error", "message": "Neteisingas kambario kodas."})
+                    continue
+
+                room = await ensure_room(code)
+                async with room.lock:
+                    purge_stale(room)
+                    if session_id not in room.players and room.is_full():
+                        await ws_send(ws, {"type": "error", "message": "Lobby pilnas (max 10)." })
+                        continue
+
+                    p = room.players.get(session_id)
+                    if p is None:
+                        p = Player(session_id=session_id)
+                        room.players[session_id] = p
+                        room.ensure_player_arrays(p)
+
+                    p.ws = ws
+                    p.last_seen = now_s()
+
+                    if room.host_session is None:
+                        room.host_session = session_id
+
+                    grid = player_view_grid(room, p) if room.status in ("running", "ended") else None
+                    await ws_send(ws, {"type": "joined", "room": room.code, "summary": room_summary(room), "grid": grid})
+                    await broadcast_room(room)
+                continue
+
+            # require room + player
+            if room is None or session_id is None:
+                await ws_send(ws, {"type": "error", "message": "Pirma prisijunkite prie lobby."})
+                continue
+            if session_id not in room.players:
+                await ws_send(ws, {"type": "error", "message": "Nebėra vietos lobby arba sesija nebegalioja."})
+                continue
+
+            p = room.players[session_id]
+            p.last_seen = now_s()
+
+            # SET NAME
+            if mtype == "setName":
+                name = str(msg.get("name") or "").strip()
+                if not name:
+                    continue
+                # keep short and clean
+                name = name[:18]
+                async with room.lock:
+                    p.name = name
+                    await broadcast_room(room)
+                continue
+
+            # HOST: SET LEVEL (only in lobby)
+            if mtype == "setLevel":
+                lvl = str(msg.get("levelKey") or "medium")
+                async with room.lock:
+                    if room.host_session != session_id:
+                        await ws_send(ws, {"type": "error", "message": "Tik host gali keisti lygį."})
+                        continue
+                    if room.status != "lobby":
+                        await ws_send(ws, {"type": "error", "message": "Lygį galima keisti tik lobby režime."})
+                        continue
+                    if lvl not in LEVELS:
+                        lvl = "medium"
+                    room.level_key = lvl
+                    await broadcast_room(room)
+                continue
+
+            # HOST: START
+            if mtype == "start":
+                async with room.lock:
+                    if room.host_session != session_id:
+                        await ws_send(ws, {"type": "error", "message": "Tik host gali startuoti."})
+                        continue
+                    if room.status != "lobby":
+                        await ws_send(ws, {"type": "error", "message": "Match jau vyksta arba baigtas."})
+                        continue
+                    if len(room.players) < 1:
+                        await ws_send(ws, {"type": "error", "message": "Reikia bent 1 žaidėjo."})
+                        continue
+
+                    start_match(room)
+                    await broadcast_room(room)
+                continue
+
+            # HOST: reset to lobby (new match)
+            if mtype == "resetLobby":
+                async with room.lock:
+                    if room.host_session != session_id:
+                        await ws_send(ws, {"type": "error", "message": "Tik host gali perstatyti match."})
+                        continue
+                    room.status = "lobby"
+                    room.start_at = None
+                    room.deadline_at = None
+                    room.winner_session = None
+                    room.end_reason = None
+                    # clear shared field for safety
+                    room.mines = []
+                    room.adj = []
+                    for pp in room.players.values():
+                        room.ensure_player_arrays(pp)
+                        pp.open = [False] * (ROWS * COLS)
+                        pp.flag = [False] * (ROWS * COLS)
+                        pp.revealed = 0
+                        pp.flags = 0
+                        pp.dead = False
+                        pp.finished_at = None
+                    await broadcast_room(room)
+                continue
+
+            # Game actions require running
+            if mtype in ("open", "flag", "chord"):
+                async with room.lock:
+                    if room.status != "running":
+                        await ws_send(ws, {"type": "error", "message": "Match nevyksta (lobby arba baigtas)." })
+                        await ws_send(ws, {"type": "state", "summary": room_summary(room), "grid": None})
+                        continue
+                    if room.winner_session is not None:
+                        end_match(room, room.winner_session, "solved")
+                        await broadcast_room(room)
+                        continue
+                    if room.deadline_at is not None and now_s() >= room.deadline_at:
+                        wsid = compute_winner_on_timeout(room)
+                        end_match(room, wsid, "timeout")
+                        await broadcast_room(room)
+                        continue
+                    if p.dead or p.finished_at is not None:
+                        await ws_send(ws, {"type": "state", "summary": room_summary(room), "grid": player_view_grid(room, p)})
+                        continue
+
+                    try:
+                        r = int(msg.get("r"))
+                        c = int(msg.get("c"))
+                    except Exception:
+                        await ws_send(ws, {"type": "error", "message": "Blogos koordinatės."})
+                        continue
+                    if not inb(r, c):
+                        await ws_send(ws, {"type": "error", "message": "Už lentos ribų."})
+                        continue
+
+                    i = idx(r, c)
+
+                    if mtype == "flag":
+                        if p.open[i]:
+                            await ws_send(ws, {"type": "state", "summary": room_summary(room), "grid": player_view_grid(room, p)})
+                            continue
+                        p.flag[i] = not p.flag[i]
+                        p.flags += 1 if p.flag[i] else -1
+                        if p.flags < 0:
+                            p.flags = 0
+
+                    elif mtype == "open":
+                        if p.flag[i] or p.open[i]:
+                            await ws_send(ws, {"type": "state", "summary": room_summary(room), "grid": player_view_grid(room, p)})
+                            continue
+                        if room.mines[i]:
+                            p.open[i] = True
+                            p.dead = True
+                            # end match immediately only if you want "first alive wins"; here: player eliminated
+                        else:
+                            flood_open(room, p, r, c)
+
+                    elif mtype == "chord":
+                        # open neighbors if open number and flags match
+                        if not p.open[i]:
+                            await ws_send(ws, {"type": "state", "summary": room_summary(room), "grid": player_view_grid(room, p)})
+                            continue
+                        if room.mines[i]:
+                            await ws_send(ws, {"type": "state", "summary": room_summary(room), "grid": player_view_grid(room, p)})
+                            continue
+                        need = int(room.adj[i])
+                        if need <= 0:
+                            await ws_send(ws, {"type": "state", "summary": room_summary(room), "grid": player_view_grid(room, p)})
+                            continue
+                        fcnt = 0
+                        for rr, cc in neighbors(r, c):
+                            if p.flag[idx(rr, cc)]:
+                                fcnt += 1
+                        if fcnt != need:
+                            await ws_send(ws, {"type": "state", "summary": room_summary(room), "grid": player_view_grid(room, p)})
+                            continue
+                        # open surrounding
+                        for rr, cc in neighbors(r, c):
+                            ii = idx(rr, cc)
+                            if p.flag[ii] or p.open[ii]:
+                                continue
+                            if room.mines[ii]:
+                                p.open[ii] = True
+                                p.dead = True
+                                break
+                            else:
+                                flood_open(room, p, rr, cc)
+
+                    # after action
+                    check_finish(room, p)
+                    if p.finished_at is not None and room.winner_session is None:
+                        room.winner_session = session_id
+                        end_match(room, room.winner_session, "solved")
+
+                    await broadcast_room(room)
+                continue
+
+            await ws_send(ws, {"type": "error", "message": "Nežinomas veiksmų tipas."})
+
+    except WebSocketDisconnect:
+        if room is not None and session_id is not None:
+            async with room.lock:
+                pp = room.players.get(session_id)
+                if pp:
+                    pp.ws = None
+                    pp.last_seen = now_s()
+                purge_stale(room)
+                await broadcast_room(room)
+        if room is not None:
+            await delete_room_if_empty(room.code)
+    except Exception:
+        # best-effort close
+        try:
+            await ws.close()
+        except Exception:
+            pass
+
+
 @app.get("/")
 async def chat_index():
     if CHAT_INDEX.exists():
@@ -728,6 +2746,7 @@ PLAY_PAGE = r"""<!doctype html>
   }
   .thumb.rebuild{background:linear-gradient(135deg, rgba(80,245,255,0.25), rgba(120,80,255,0.25));}
   .thumb.tile{background:linear-gradient(135deg, rgba(255,180,80,0.22), rgba(255,80,200,0.22));}
+  .thumb.snowmines{background:linear-gradient(135deg, rgba(130,210,255,0.26), rgba(255,255,255,0.10));}
   .thumb::after{
     content:"";
     position:absolute; inset:0;
@@ -882,7 +2901,8 @@ PLAY_PAGE = r"""<!doctype html>
 <script>
   const GAME_LIST = [
     {id:"rebuild_6x6", name:"Rebuild the Pattern (6×6)", hint:"Drag pieces onto the grid. Submit = your 6×6 pattern."},
-    {id:"tile_3x3", name:"Tile Puzzle (3×3)", hint:"Drag tiles into the correct positions to recreate the image."}
+    {id:"tile_3x3", name:"Tile Puzzle (3×3)", hint:"Drag tiles into the correct positions to recreate the image."},
+    {id:"snowmines_30x20", name:"SnowMines (30×20)", hint:"Competitive Mines. Left click = open, right click = flag. Same board for everyone, 3:00 cap. Opens in a dedicated game page."}
   ];
 
   let ws=null, playerId=null, roomId=null, roomState=null;
@@ -963,7 +2983,7 @@ PLAY_PAGE = r"""<!doctype html>
         btn.dataset.game=g.id;
 
         const thumb=document.createElement("div");
-        thumb.className="thumb " + (g.id==="rebuild_6x6" ? "rebuild" : "tile");
+        thumb.className="thumb " + (g.id==="rebuild_6x6" ? "rebuild" : (g.id==="snowmines_30x20" ? "snowmines" : "tile"));
 
         const meta=document.createElement("div");
         meta.className="gmeta";
@@ -1049,6 +3069,15 @@ function connect(){
     if(name) { byId("name").value = name; persistNick(name); }
 
     const gameType=byId("gameType").value||"rebuild_6x6";
+
+    // SnowMines runs on a dedicated page (with its own lobby + websocket).
+    if(gameType==="snowmines_30x20"){
+      const nick = (name||preferredNick()||"").trim();
+      if(nick){ byId("name").value = nick; persistNick(nick); }
+      window.location.href = "/play/snowmines/?nick=" + encodeURIComponent(nick);
+      return;
+    }
+
     send("training:join", {targetPlayers, name, gameType});
     byId("btnLeave").disabled=false;
     status("Joining…");

@@ -1534,7 +1534,7 @@ HTML = r"""<!doctype html>
         <b>__APP_TITLE__</b>
         <span class="topic" id="topic">#main</span>
       </div>
-      <a id="playLink" class="playLink" href="#" title="HestioPlay">
+      <a id="playLink" class="playLink" href="/play/" target="_blank" rel="noopener noreferrer" title="Open HestioPlay (new tab)">
         <img src="__PLAY_LOGO__" alt="HestioPlay"/>
         <span class="playText">HestioPlay</span>
       </a>
@@ -1705,20 +1705,7 @@ logEl.addEventListener("contextmenu", (e) => {
 });
   const logoutBtn = document.getElementById("logout");
   const vilniusTimeEl = document.getElementById("vilniusTime");
-
-  const playLink = document.getElementById("playLink");
-  if(playLink){
-    playLink.addEventListener("click", (ev) => {
-      ev.preventDefault();
-      // open / create public room for games
-      if(ws && ws.readyState === WebSocket.OPEN){
-        wsSend({type:"say", room: activeRoom, text: "/join #play"});
-        switchRoom("play");
-      }
-    });
-  }
-
-
+  // HestioPlay link uses native <a href="/play/" target="_blank"> (supports right-click open in new tab/window).
   // Vilnius clock (Europe/Vilnius)
   function startVilniusClock(){
     const elApp = document.getElementById("vilniusTime");
@@ -2612,3 +2599,1060 @@ function renderUsers(items){
 </body>
 </html>
 """
+
+# =========================
+# HestioPlay sub-app (/play)
+# =========================
+
+def build_play_app() -> 'FastAPI':
+    import asyncio
+    import json
+    import secrets
+    import time
+    from dataclasses import dataclass, field
+    from typing import Any, Dict, List, Optional
+
+    from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import HTMLResponse, JSONResponse
+
+
+    def now_ms() -> int:
+        return int(time.time() * 1000)
+
+
+    def clamp_int(x: Any, lo: int, hi: int, default: int) -> int:
+        try:
+            v = int(x)
+            return max(lo, min(hi, v))
+        except Exception:
+            return default
+
+
+    def make_room_id() -> str:
+        return secrets.token_urlsafe(6)
+
+
+    def make_player_id() -> str:
+        return secrets.token_urlsafe(8)
+
+
+    def safe_json_loads(s: str) -> Dict[str, Any]:
+        try:
+            obj = json.loads(s)
+            return obj if isinstance(obj, dict) else {}
+        except Exception:
+            return {}
+
+
+    # -----------------------------
+    # Game generation (Rebuild the Pattern)
+    # -----------------------------
+
+    def _seed_to_u32(seed: str) -> int:
+        s = 0
+        for ch in seed[:32]:
+            s = (s * 131 + ord(ch)) & 0xFFFFFFFF
+        return s or 2463534242
+
+
+    def _xorshift32(x: int) -> int:
+        x ^= (x << 13) & 0xFFFFFFFF
+        x ^= (x >> 17) & 0xFFFFFFFF
+        x ^= (x << 5) & 0xFFFFFFFF
+        return x & 0xFFFFFFFF
+
+
+    def generate_reference_grid(seed: str, size: int = 6) -> List[int]:
+        total = size * size
+        grid = [0] * total
+
+        x = _seed_to_u32(seed)
+
+        filled_target = 16 + (x % 7)  # 16..22 (tunable)
+        chosen = set()
+        while len(chosen) < filled_target:
+            x = _xorshift32(x)
+            idx = x % total
+            chosen.add(idx)
+        for idx in chosen:
+            grid[idx] = 1
+        return grid
+
+
+    def _neighbors(idx: int, size: int) -> List[int]:
+        r, c = divmod(idx, size)
+        out = []
+        if r > 0:
+            out.append((r - 1) * size + c)
+        if r < size - 1:
+            out.append((r + 1) * size + c)
+        if c > 0:
+            out.append(r * size + (c - 1))
+        if c < size - 1:
+            out.append(r * size + (c + 1))
+        return out
+
+
+    def split_into_pieces(reference: List[int], size: int, seed: str) -> List[Dict[str, Any]]:
+        """
+        Split filled cells into pieces for drag&drop.
+        - connected components (4-neighborhood)
+        - chunk big components into smaller pieces (mostly size 4)
+        """
+        filled = [i for i, v in enumerate(reference) if v == 1]
+        filled_set = set(filled)
+        visited = set()
+
+        comps: List[List[int]] = []
+        for start in filled:
+            if start in visited:
+                continue
+            stack = [start]
+            visited.add(start)
+            comp = []
+            while stack:
+                cur = stack.pop()
+                comp.append(cur)
+                for nb in _neighbors(cur, size):
+                    if nb in filled_set and nb not in visited:
+                        visited.add(nb)
+                        stack.append(nb)
+            comps.append(comp)
+
+        rng = _seed_to_u32(seed)
+
+        def pick_chunk(cells: List[int], chunk_size: int) -> List[int]:
+            nonlocal rng
+            cells_sorted = sorted(set(cells))
+            rng = _xorshift32(rng)
+            rot = rng % len(cells_sorted)
+            rot_cells = cells_sorted[rot:] + cells_sorted[:rot]
+            return rot_cells[:chunk_size]
+
+        pieces_cells: List[List[int]] = []
+        for comp in comps:
+            comp = list(set(comp))
+            if len(comp) <= 5:
+                pieces_cells.append(comp)
+            else:
+                remaining = set(comp)
+                while remaining:
+                    rem = len(remaining)
+                    if rem <= 5:
+                        pieces_cells.append(list(remaining))
+                        remaining.clear()
+                        break
+                    chunk = pick_chunk(list(remaining), 4)
+                    for c in chunk:
+                        remaining.discard(c)
+                    pieces_cells.append(chunk)
+
+        pieces: List[Dict[str, Any]] = []
+        for i, cells in enumerate(pieces_cells):
+            coords = [(idx % size, idx // size) for idx in cells]  # (x,y)
+            minx = min(x for x, y in coords)
+            miny = min(y for x, y in coords)
+            norm = [{"dx": x - minx, "dy": y - miny} for x, y in coords]
+            pieces.append({"id": f"p{i+1}", "cells": norm, "cellCount": len(norm)})
+        return pieces
+
+
+    def validate_submission_grid(grid: Any, size: int = 6) -> Optional[List[int]]:
+        total = size * size
+        if not isinstance(grid, list) or len(grid) != total:
+            return None
+        out: List[int] = []
+        for v in grid:
+            if isinstance(v, bool):
+                out.append(1 if v else 0)
+            elif isinstance(v, (int, float)):
+                out.append(1 if int(v) != 0 else 0)
+            else:
+                return None
+        return out
+
+
+    def compute_accuracy(reference: List[int], submitted: List[int]) -> float:
+        matches = sum(1 for a, b in zip(reference, submitted) if a == b)
+        return round(100.0 * matches / len(reference), 2) if reference else 0.0
+
+
+    # -----------------------------
+    # Room state
+    # -----------------------------
+
+    @dataclass
+    class PlayerConn:
+        id: str
+        name: str
+        ws: WebSocket
+        joined_at_ms: int = field(default_factory=now_ms)
+        submitted_at_ms: Optional[int] = None
+        submission_grid: Optional[List[int]] = None
+
+
+    @dataclass
+    class GameSession:
+        game_id: str
+        seed: str
+        size: int = 6
+        reference_grid: List[int] = field(default_factory=list)
+        pieces: List[Dict[str, Any]] = field(default_factory=list)
+        started_at_ms: int = 0
+        ends_at_ms: int = 0
+        finished: bool = False
+
+
+    @dataclass
+    class Room:
+        id: str
+        target_players: int
+        status: str = "waiting"  # waiting|countdown|in_game|results
+        created_at_ms: int = field(default_factory=now_ms)
+        players: Dict[str, PlayerConn] = field(default_factory=dict)
+        game: Optional[GameSession] = None
+        countdown_task: Optional[asyncio.Task] = None
+        game_task: Optional[asyncio.Task] = None
+
+
+    class RoomManager:
+        def __init__(self) -> None:
+            self.lock = asyncio.Lock()
+            self.rooms_by_id: Dict[str, Room] = {}
+            self.pool: Dict[int, List[str]] = {i: [] for i in range(1, 11)}
+
+        async def assign_room(self, target_players: int) -> Room:
+            async with self.lock:
+                target_players = max(1, min(10, target_players))
+                for rid in list(self.pool.get(target_players, [])):
+                    room = self.rooms_by_id.get(rid)
+                    if room and room.status == "waiting" and len(room.players) < room.target_players:
+                        return room
+                rid = make_room_id()
+                room = Room(id=rid, target_players=target_players)
+                self.rooms_by_id[rid] = room
+                self.pool[target_players].append(rid)
+                return room
+
+        async def remove_room_from_pool(self, room: Room) -> None:
+            ids = self.pool.get(room.target_players, [])
+            if room.id in ids:
+                ids.remove(room.id)
+
+        async def maybe_cleanup_room(self, room: Room) -> None:
+            async with self.lock:
+                if len(room.players) == 0:
+                    await self.remove_room_from_pool(room)
+                    self.rooms_by_id.pop(room.id, None)
+
+        async def mark_room_not_joinable(self, room: Room) -> None:
+            async with self.lock:
+                await self.remove_room_from_pool(room)
+
+        async def mark_room_joinable(self, room: Room) -> None:
+            async with self.lock:
+                if room.status == "waiting" and len(room.players) < room.target_players:
+                    ids = self.pool.get(room.target_players, [])
+                    if room.id not in ids:
+                        ids.append(room.id)
+
+        async def list_public_rooms(self) -> List[Dict[str, Any]]:
+            async with self.lock:
+                out = []
+                for room in self.rooms_by_id.values():
+                    if room.status in ("waiting", "countdown"):
+                        out.append(
+                            {
+                                "roomId": room.id,
+                                "targetPlayers": room.target_players,
+                                "count": len(room.players),
+                                "status": room.status,
+                            }
+                        )
+                out.sort(key=lambda r: (r["targetPlayers"] - r["count"], -r["count"]))
+                return out
+
+
+    manager = RoomManager()
+
+
+    # -----------------------------
+    # FastAPI app
+    # -----------------------------
+
+    play_app = FastAPI(title="Hestio Rooms Training v1")
+
+    play_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # dev only
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+
+    # -----------------------------
+    # Pages
+    # -----------------------------
+
+    TEST_PAGE = """
+    <!doctype html>
+    <html>
+      <head><meta charset="utf-8" /><title>Hestio Training v1 - Test Client</title>
+        <style>
+          body { font-family: system-ui, sans-serif; margin: 24px; max-width: 900px; }
+          input, button, select { padding: 8px; margin: 4px; }
+          pre { background: #0b1020; color: #d7e2ff; padding: 12px; border-radius: 8px; overflow:auto; }
+          .row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+        </style>
+      </head>
+      <body>
+        <h2>Hestio Rooms Training v1 - Test Client</h2>
+        <div class="row">
+          <label>Players target:</label>
+          <select id="target">
+            <option>1</option><option>2</option><option>3</option><option>4</option><option>5</option>
+            <option>6</option><option>7</option><option>8</option><option>9</option><option selected>10</option>
+          </select>
+          <label>Name:</label>
+          <input id="name" placeholder="optional" />
+          <button onclick="connect()">Connect</button>
+          <button onclick="sendSubmit()">Submit (random)</button>
+          <button onclick="leave()">Leave</button>
+          <a href="/play" style="margin-left:12px;">Open /play client</a>
+        </div>
+        <pre id="log"></pre>
+        <script>
+          let ws = null;
+          function log(msg){ const el=document.getElementById('log'); el.textContent += msg+"\\n"; el.scrollTop = el.scrollHeight; }
+          function connect(){
+            if(ws) ws.close();
+            const target=document.getElementById('target').value;
+            ws=new WebSocket(`ws://${location.host}/play/ws`);
+            ws.onopen=()=>{ log("[ws] open"); ws.send(JSON.stringify({type:"training:join", payload:{targetPlayers:parseInt(target), name:document.getElementById('name').value}})); };
+            ws.onmessage=(ev)=>log(ev.data);
+            ws.onclose=()=>log("[ws] close");
+          }
+          function sendSubmit(){ if(!ws) return; const grid=Array.from({length:36}, ()=>Math.random()<0.5?1:0); ws.send(JSON.stringify({type:"game:submit", payload:{grid}})); }
+          function leave(){ if(!ws) return; ws.send(JSON.stringify({type:"room:leave", payload:{}})); ws.close(); }
+        </script>
+      </body>
+    </html>
+    """.strip()
+
+    PLAY_PAGE = r"""<!doctype html>
+    <html>
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>Hestio Play (Training)</title>
+      <style>
+        :root { --bg:#070a14; --panel:rgba(255,255,255,0.06); --text:#eaf0ff; --muted:rgba(234,240,255,0.7);
+                --stroke:rgba(255,255,255,0.12); --good:rgba(80,245,255,0.9); --bad:rgba(255,110,220,0.9); }
+        *{ box-sizing:border-box; }
+        body{ margin:0; background:radial-gradient(1200px 800px at 50% 20%, #0b1330 0%, var(--bg) 60%);
+              color:var(--text); font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+        header{ position:sticky; top:0; z-index:10; backdrop-filter:blur(14px); background:rgba(7,10,20,0.7);
+                border-bottom:1px solid var(--stroke); padding:14px 18px; display:flex; align-items:center; justify-content:space-between; }
+        .brand{ display:flex; align-items:center; gap:10px; font-weight:800; letter-spacing:0.8px; }
+        .pill{ padding:6px 10px; border:1px solid var(--stroke); border-radius:999px; background:rgba(255,255,255,0.04); color:var(--muted); font-size:12px; }
+        main{ max-width:1200px; margin:0 auto; padding:18px; }
+        .grid{ display:grid; grid-template-columns:360px 1fr; gap:14px; }
+        @media (max-width:980px){ .grid{ grid-template-columns:1fr; } }
+        .card{ border:1px solid var(--stroke); background:var(--panel); border-radius:18px; padding:14px; box-shadow:0 10px 30px rgba(0,0,0,0.2); }
+        .card h3{ margin:0 0 10px 0; font-size:15px; color:var(--muted); font-weight:650; }
+        .row{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+        select,input,button{ border-radius:12px; border:1px solid var(--stroke); background:rgba(255,255,255,0.06); color:var(--text);
+                             padding:10px 12px; font-size:14px; outline:none; }
+        button{ cursor:pointer; background:rgba(255,255,255,0.08); }
+        button.primary{ border-color:rgba(80,245,255,0.35); box-shadow:0 0 0 3px rgba(80,245,255,0.08); }
+        button:disabled{ cursor:not-allowed; opacity:0.6; }
+        .muted{ color:var(--muted); font-size:13px; }
+        .status{ font-size:14px; } .status strong{ color:var(--good); }
+        .gameWrap{ display:grid; grid-template-columns:340px 1fr; gap:14px; }
+        @media (max-width:980px){ .gameWrap{ grid-template-columns:1fr; } }
+        .boardArea{ display:flex; gap:14px; flex-wrap:wrap; }
+        .miniGrid,.mainGrid{ border:1px solid var(--stroke); background:rgba(255,255,255,0.04); border-radius:16px; padding:12px; }
+        .miniGrid{ width:300px; } .mainGrid{ flex:1; min-width:340px; }
+        .gridTitle{ display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+        .timer{ font-weight:750; letter-spacing:0.6px; } .timer.bad{ color:var(--bad); }
+        .cells{ display:grid; gap:6px; justify-content:start; align-content:start; }
+        .cell{ width:34px; height:34px; border-radius:10px; border:1px solid rgba(255,255,255,0.12); background:rgba(255,255,255,0.03); }
+        .cell.filled{ background:rgba(80,245,255,0.18); border-color:rgba(80,245,255,0.35); }
+        .cell.occupied{ background:rgba(255,255,255,0.10); border-color:rgba(255,255,255,0.18); }
+        .cell.dropok{ outline:3px solid rgba(80,245,255,0.30); } .cell.dropbad{ outline:3px solid rgba(255,110,220,0.30); }
+        .tray{ position:relative; min-height:360px; border-radius:16px; border:1px solid var(--stroke); background:rgba(255,255,255,0.04);
+               overflow:hidden; padding:10px; }
+        .piece{ position:absolute; touch-action:none; user-select:none; border-radius:14px; padding:8px;
+                border:1px solid rgba(255,255,255,0.16); background:rgba(255,255,255,0.06); box-shadow:0 12px 22px rgba(0,0,0,0.25); cursor:grab; }
+        .piece.dragging{ cursor:grabbing; transform:scale(1.02); }
+        .piece .pgrid{ display:grid; gap:6px; align-content:start; justify-content:start; }
+        .pcell{ width:30px; height:30px; border-radius:9px; background:rgba(255,255,255,0.10); border:1px solid rgba(255,255,255,0.16); }
+        .resultsList{ display:flex; flex-direction:column; gap:8px; }
+        .resItem{ display:flex; align-items:center; justify-content:space-between; border:1px solid var(--stroke); background:rgba(255,255,255,0.05);
+                  border-radius:14px; padding:10px 12px; }
+        .tag{ font-size:12px; padding:4px 8px; border-radius:999px; border:1px solid var(--stroke); color:var(--muted); }
+        .rank{ font-weight:800; width:38px; text-align:center; color:var(--good); } .right{ display:flex; gap:8px; align-items:center; }
+      </style>
+    </head>
+    <body>
+    <header>
+      <div class="brand">HESTIO <span class="pill">PLAY · Training</span></div>
+      <div class="row"><span class="pill" id="pillConn">Disconnected</span><span class="pill" id="pillRoom">Room: —</span></div>
+    </header>
+
+    <main>
+      <div class="grid">
+        <div class="card">
+          <h3>Join public room</h3>
+          <div class="row"><label class="muted">Players</label>
+            <select id="targetPlayers"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option>
+              <option>6</option><option>7</option><option>8</option><option>9</option><option selected>10</option></select>
+          </div>
+          <div class="row" style="margin-top:8px;">
+            <input id="name" placeholder="Nickname (optional)" maxlength="24" style="flex:1; min-width:160px;" />
+            <button class="primary" id="btnJoin" onclick="join()">Join</button>
+            <button id="btnLeave" onclick="leave()" disabled>Leave</button>
+          </div>
+          <div style="margin-top:12px;" class="status"><div class="muted">Status</div><div id="statusLine">Not connected.</div></div>
+          <div style="margin-top:12px;" class="muted">Auto-start when room fills. Timer: 60s. Board: 6×6.</div>
+        </div>
+
+        <div class="card">
+          <h3>Game</h3>
+          <div id="viewWaiting" style="display:block;"><div class="muted">Waiting room</div><div id="waitingDetails" style="margin-top:8px;">—</div></div>
+          <div id="viewCountdown" style="display:none;"><div class="muted">Starting in</div><div style="font-size:46px; font-weight:900; margin-top:8px;" id="countdownNum">3</div></div>
+
+          <div id="viewGame" style="display:none;">
+            <div class="gameWrap">
+              <div>
+                <div class="muted">Pieces</div>
+                <div class="tray" id="tray"></div>
+                <div class="row" style="margin-top:10px;">
+                  <button class="primary" id="btnSubmit" onclick="submit()">Submit</button>
+                  <span class="muted" id="submitState">—</span>
+                </div>
+              </div>
+              <div>
+                <div class="boardArea">
+                  <div class="miniGrid">
+                    <div class="gridTitle"><div class="muted">Reference</div></div>
+                    <div class="cells" id="refGrid"></div>
+                  </div>
+                  <div class="mainGrid">
+                    <div class="gridTitle"><div class="muted">Your board</div><div class="timer" id="timer">60.0</div></div>
+                    <div class="cells" id="mainGrid"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div id="viewResults" style="display:none;">
+            <div class="muted">Results</div>
+            <div class="resultsList" id="resultsList" style="margin-top:10px;"></div>
+            <div class="row" style="margin-top:12px;">
+              <button class="primary" onclick="playAgain()">Play again</button>
+              <button onclick="backToJoin()">Change players</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <script>
+      let ws=null, playerId=null, roomId=null, roomState=null;
+      let game=null, countdownInterval=null, timerInterval=null;
+      let pieceState={}, boardOcc=[];
+      const SIZE=6;
+
+      function setPill(id,t){ document.getElementById(id).textContent=t; }
+      function show(view){ for(const id of ["viewWaiting","viewCountdown","viewGame","viewResults"]){ document.getElementById(id).style.display=(id===view)?"block":"none"; } }
+      function status(msg,good=false){ document.getElementById("statusLine").innerHTML = good ? `<strong>${msg}</strong>` : msg; }
+
+      function connect(){
+        if(ws) return;
+        const proto=(location.protocol==="https:")?"wss":"ws";
+        ws=new WebSocket(`${proto}://${location.host}/play/ws`);
+        ws.onopen=()=>{ setPill("pillConn","Connected"); status("Connected. Choose players and join.", true); };
+        ws.onmessage=(ev)=>{ let m=null; try{ m=JSON.parse(ev.data);}catch{return;} handleMsg(m.type, m.payload||{}); };
+        ws.onclose=()=>{ setPill("pillConn","Disconnected"); ws=null; playerId=null; roomId=null; roomState=null; game=null; stopCountdown(); stopTimer();
+                         show("viewWaiting"); document.getElementById("btnLeave").disabled=true; status("Disconnected. Refresh to reconnect."); };
+      }
+      connect();
+
+      function send(type,payload){ if(!ws) return; ws.send(JSON.stringify({type,payload})); }
+
+      function join(){
+        connect();
+        const targetPlayers=parseInt(document.getElementById("targetPlayers").value,10);
+        const name=document.getElementById("name").value||"";
+        send("training:join", {targetPlayers, name});
+        document.getElementById("btnLeave").disabled=false;
+        status("Joining public room…");
+      }
+      function leave(){
+        send("room:leave", {});
+        document.getElementById("btnLeave").disabled=true;
+        setPill("pillRoom","Room: —");
+        status("Left room.");
+        show("viewWaiting");
+        document.getElementById("waitingDetails").textContent="—";
+      }
+      function playAgain(){ join(); }
+      function backToJoin(){ show("viewWaiting"); status("Choose players and join."); }
+
+      function handleMsg(type,payload){
+        if(type==="session:hello"){ playerId=payload.playerId; status(`Session ready. Your ID: ${playerId.slice(0,6)}…`, true); return; }
+        if(type==="room:state"){
+          roomState=payload; roomId=payload.roomId; setPill("pillRoom",`Room: ${roomId}`);
+          const count=payload.count, target=payload.targetPlayers, st=payload.status;
+          const names=payload.players.map(p=>`${p.name}${p.submitted?" (✓)":""}`);
+          document.getElementById("waitingDetails").innerHTML =
+            `<div><strong>${st.toUpperCase()}</strong></div>
+             <div style="margin-top:6px;">Filling <strong>${count}/${target}</strong></div>
+             <div class="muted" style="margin-top:8px;">Players:</div>
+             <div style="margin-top:6px;">${names.join(", ")||"—"}</div>`;
+          if(st==="waiting"){ show("viewWaiting"); status(`Waiting: ${count}/${target} players.`); }
+          if(st==="in_game"){ show("viewGame"); }
+          return;
+        }
+        if(type==="room:countdown"){ show("viewCountdown"); startCountdown(payload.startsAtMs); status("Room full. Starting…", true); return; }
+        if(type==="game:start"){
+          stopCountdown(); show("viewGame");
+          document.getElementById("submitState").textContent="—";
+          document.getElementById("btnSubmit").disabled=false;
+          game={gameId:payload.gameId, endsAtMs:payload.endsAtMs, size:payload.size, referenceGrid:payload.referenceGrid, pieces:payload.pieces};
+          initBoards(game.referenceGrid); initPieces(game.pieces); startTimer(game.endsAtMs);
+          status("Game started. Drag pieces onto the board.", true);
+          return;
+        }
+        if(type==="game:results"){ stopTimer(); show("viewResults"); renderResults(payload.results); status("Round finished. Results are in.", true); return; }
+        if(type==="error"){ status(`Error: ${payload.message||"unknown"}`); return; }
+      }
+
+      function stopCountdown(){ if(countdownInterval) clearInterval(countdownInterval); countdownInterval=null; }
+      function startCountdown(startsAtMs){
+        stopCountdown();
+        const el=document.getElementById("countdownNum");
+        countdownInterval=setInterval(()=>{ const ms=startsAtMs-Date.now(); const s=Math.max(0, Math.ceil(ms/1000)); el.textContent=String(s); if(ms<=0) stopCountdown(); }, 50);
+      }
+      function stopTimer(){ if(timerInterval) clearInterval(timerInterval); timerInterval=null; }
+      function startTimer(endsAtMs){
+        stopTimer();
+        const el=document.getElementById("timer");
+        timerInterval=setInterval(()=>{ const ms=endsAtMs-Date.now(); const sec=Math.max(0, ms/1000); el.textContent=sec.toFixed(1); el.classList.toggle("bad", sec<=10); if(ms<=0) stopTimer(); }, 60);
+      }
+
+      function initBoards(referenceGrid){
+        const refEl=document.getElementById("refGrid");
+        refEl.innerHTML=""; refEl.style.gridTemplateColumns=`repeat(${SIZE}, 34px)`;
+        for(let i=0;i<SIZE*SIZE;i++){ const d=document.createElement("div"); d.className="cell"+(referenceGrid[i]?" filled":""); refEl.appendChild(d); }
+        const mainEl=document.getElementById("mainGrid");
+        mainEl.innerHTML=""; mainEl.style.gridTemplateColumns=`repeat(${SIZE}, 34px)`;
+        boardOcc=Array.from({length:SIZE*SIZE},()=>0);
+        for(let i=0;i<SIZE*SIZE;i++){ const d=document.createElement("div"); d.className="cell"; d.dataset.idx=String(i); mainEl.appendChild(d); }
+      }
+
+      function recomputeBoardOcc(){
+        boardOcc=Array.from({length:SIZE*SIZE},()=>0);
+        for(const pid of Object.keys(pieceState)){
+          const ps=pieceState[pid];
+          if(!ps.placed) continue;
+          for(const c of ps.cells){
+            const x=ps.x+c.dx, y=ps.y+c.dy;
+            boardOcc[y*SIZE+x]=1;
+          }
+        }
+        const mainEl=document.getElementById("mainGrid");
+        const cells=mainEl.querySelectorAll(".cell");
+        cells.forEach((cell,idx)=>cell.classList.toggle("occupied", boardOcc[idx]===1));
+      }
+
+      function initPieces(pieces){
+        pieceState={};
+        const tray=document.getElementById("tray");
+        tray.innerHTML="";
+        let cursorX=10, cursorY=10, rowH=0;
+        const trayW=tray.clientWidth||320;
+
+        pieces.forEach((p)=>{
+          const el=document.createElement("div");
+          el.className="piece"; el.dataset.pid=p.id;
+
+          let maxDx=0,maxDy=0;
+          p.cells.forEach(c=>{ maxDx=Math.max(maxDx,c.dx); maxDy=Math.max(maxDy,c.dy); });
+
+          const grid=document.createElement("div");
+          grid.className="pgrid";
+          grid.style.gridTemplateColumns=`repeat(${maxDx+1}, 30px)`;
+
+          const cellSet=new Set(p.cells.map(c=>`${c.dx},${c.dy}`));
+          for(let y=0;y<=maxDy;y++){
+            for(let x=0;x<=maxDx;x++){
+              const pc=document.createElement("div");
+              if(cellSet.has(`${x},${y}`)) pc.className="pcell";
+              else { pc.style.width="30px"; pc.style.height="30px"; pc.style.opacity="0"; }
+              grid.appendChild(pc);
+            }
+          }
+          el.appendChild(grid);
+          tray.appendChild(el);
+
+          const rect=el.getBoundingClientRect();
+          const w=rect.width, h=rect.height;
+          if(cursorX+w+10>trayW){ cursorX=10; cursorY+=rowH+10; rowH=0; }
+          rowH=Math.max(rowH,h);
+
+          el.style.left=`${cursorX}px`; el.style.top=`${cursorY}px`;
+
+          pieceState[p.id]={ placed:false, x:0,y:0, trayX:cursorX, trayY:cursorY, el, cells:p.cells };
+
+          cursorX+=w+10;
+          enableDrag(el);
+        });
+
+        recomputeBoardOcc();
+      }
+
+      function enableDrag(el){
+        let dragging=false, startX=0, startY=0, origLeft=0, origTop=0;
+        el.addEventListener("pointerdown",(e)=>{
+          e.preventDefault();
+          const pid=el.dataset.pid; if(!pid) return;
+          dragging=true; el.classList.add("dragging"); el.setPointerCapture(e.pointerId);
+          startX=e.clientX; startY=e.clientY;
+          origLeft=parseFloat(el.style.left||"0"); origTop=parseFloat(el.style.top||"0");
+          const ps=pieceState[pid];
+          if(ps && ps.placed){ ps.placed=false; recomputeBoardOcc(); }
+        });
+        el.addEventListener("pointermove",(e)=>{
+          if(!dragging) return;
+          const dx=e.clientX-startX, dy=e.clientY-startY;
+          el.style.left=`${origLeft+dx}px`; el.style.top=`${origTop+dy}px`;
+          showDropHint(el);
+        });
+        const up=()=>{
+          if(!dragging) return;
+          dragging=false; el.classList.remove("dragging"); clearDropHint();
+          const pid=el.dataset.pid;
+          const ok=trySnapToBoard(pid);
+          if(!ok){
+            const ps=pieceState[pid];
+            el.style.left=`${ps.trayX}px`; el.style.top=`${ps.trayY}px`;
+            ps.placed=false; recomputeBoardOcc();
+          }
+        };
+        el.addEventListener("pointerup", up);
+        el.addEventListener("pointercancel", up);
+      }
+
+      function getBoardCellFromPoint(clientX, clientY){
+        const mainEl=document.getElementById("mainGrid");
+        const rect=mainEl.getBoundingClientRect();
+        if(clientX<rect.left||clientX>rect.right||clientY<rect.top||clientY>rect.bottom) return null;
+        const cellSize=34, gap=6, pitch=cellSize+gap;
+        const localX=clientX-rect.left, localY=clientY-rect.top;
+        const col=Math.floor(localX/pitch), row=Math.floor(localY/pitch);
+        if(col<0||col>=SIZE||row<0||row>=SIZE) return null;
+        return {x:col,y:row};
+      }
+
+      function canPlace(pid, cellX, cellY){
+        const ps=pieceState[pid]; if(!ps) return false;
+        const occTemp=boardOcc.slice();
+        for(const c of ps.cells){
+          const x=cellX+c.dx, y=cellY+c.dy;
+          if(x<0||x>=SIZE||y<0||y>=SIZE) return false;
+          const idx=y*SIZE+x;
+          if(occTemp[idx]===1) return false;
+          occTemp[idx]=1;
+        }
+        return true;
+      }
+
+      function trySnapToBoard(pid){
+        const ps=pieceState[pid]; if(!ps) return false;
+        const el=ps.el;
+        const elRect=el.getBoundingClientRect();
+        const midX=elRect.left+elRect.width*0.5, midY=elRect.top+elRect.height*0.5;
+        const cell=getBoardCellFromPoint(midX, midY);
+        if(!cell) return false;
+        if(!canPlace(pid, cell.x, cell.y)) return false;
+
+        const mainEl=document.getElementById("mainGrid");
+        const gridRect=mainEl.getBoundingClientRect();
+        const cellSize=34, gap=6, pitch=cellSize+gap;
+
+        const leftPx = cell.x*pitch;
+        const topPx  = cell.y*pitch;
+
+        const tray=document.getElementById("tray");
+        const trayRect=tray.getBoundingClientRect();
+
+        // mainGrid has 12px padding
+        const targetLeftInPage = gridRect.left + leftPx + 12;
+        const targetTopInPage  = gridRect.top  + topPx  + 12;
+
+        const leftInTray = targetLeftInPage - trayRect.left;
+        const topInTray  = targetTopInPage  - trayRect.top;
+
+        el.style.left=`${leftInTray}px`;
+        el.style.top =`${topInTray}px`;
+
+        ps.placed=true; ps.x=cell.x; ps.y=cell.y;
+        recomputeBoardOcc();
+        return true;
+      }
+
+      function clearDropHint(){
+        const mainEl=document.getElementById("mainGrid");
+        mainEl.querySelectorAll(".cell").forEach(c=>c.classList.remove("dropok","dropbad"));
+      }
+      function showDropHint(pieceEl){
+        clearDropHint();
+        const pid=pieceEl.dataset.pid;
+        const rect=pieceEl.getBoundingClientRect();
+        const cell=getBoardCellFromPoint(rect.left+rect.width*0.5, rect.top+rect.height*0.5);
+        if(!cell) return;
+        const ok=canPlace(pid, cell.x, cell.y);
+        const idx=cell.y*SIZE+cell.x;
+        const mainEl=document.getElementById("mainGrid");
+        const targetCell=mainEl.querySelector(`.cell[data-idx="${idx}"]`);
+        if(targetCell) targetCell.classList.add(ok?"dropok":"dropbad");
+      }
+
+      function submit(){
+        if(!game) return;
+        document.getElementById("btnSubmit").disabled=true;
+        document.getElementById("submitState").textContent="Submitted. Waiting for others…";
+        send("game:submit", {grid: boardOcc});
+      }
+
+      function renderResults(results){
+        const list=document.getElementById("resultsList");
+        list.innerHTML="";
+        results.forEach(r=>{
+          const item=document.createElement("div");
+          item.className="resItem";
+          const left=document.createElement("div");
+          left.className="row";
+          const rank=document.createElement("div");
+          rank.className="rank"; rank.textContent=`#${r.rank}`;
+          const name=document.createElement("div");
+          name.innerHTML=`<div style="font-weight:750;">${escapeHtml(r.name)}</div>
+                          <div class="muted">${r.accuracy}% · ${(r.timeMs/1000).toFixed(2)}s</div>`;
+          left.appendChild(rank); left.appendChild(name);
+          const right=document.createElement("div"); right.className="right";
+          const tag=document.createElement("div"); tag.className="tag";
+          tag.textContent = (r.playerId && playerId && r.playerId===playerId) ? "You" : "";
+          right.appendChild(tag);
+          item.appendChild(left); item.appendChild(right);
+          list.appendChild(item);
+        });
+      }
+      function escapeHtml(s){ return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m])); }
+    </script>
+    </body>
+    </html>
+    """.strip()
+
+
+    @play_app.get("/")
+    async def index() -> HTMLResponse:
+        return HTMLResponse(PLAY_PAGE)
+
+    @play_app.get("/play")
+    async def play() -> HTMLResponse:
+        # Backward-compatible alias
+        return HTMLResponse(PLAY_PAGE)
+
+    @play_app.get("/health")
+    async def health() -> JSONResponse:
+        return JSONResponse({"ok": True, "ts": now_ms()})
+
+
+    @play_app.get("/public-rooms")
+    async def public_rooms() -> JSONResponse:
+        rooms = await manager.list_public_rooms()
+        return JSONResponse({"rooms": rooms, "ts": now_ms()})
+
+
+    # -----------------------------
+    # WebSocket helpers
+    # -----------------------------
+
+    async def ws_send(ws: WebSocket, msg_type: str, payload: Dict[str, Any]) -> None:
+        await ws.send_text(json.dumps({"type": msg_type, "payload": payload}))
+
+
+    async def room_broadcast(room: Room, msg_type: str, payload: Dict[str, Any]) -> None:
+        dead: List[str] = []
+        for pid, p in room.players.items():
+            try:
+                await ws_send(p.ws, msg_type, payload)
+            except Exception:
+                dead.append(pid)
+        for pid in dead:
+            room.players.pop(pid, None)
+
+
+    def room_state_payload(room: Room) -> Dict[str, Any]:
+        return {
+            "roomId": room.id,
+            "targetPlayers": room.target_players,
+            "count": len(room.players),
+            "status": room.status,
+            "players": [
+                {"id": p.id, "name": p.name, "submitted": p.submitted_at_ms is not None}
+                for p in room.players.values()
+            ],
+        }
+
+
+    # -----------------------------
+    # Game lifecycle
+    # -----------------------------
+
+    async def start_countdown_if_ready(room: Room) -> None:
+        if room.status != "waiting":
+            return
+
+        ready = False
+        if room.target_players == 1 and len(room.players) >= 1:
+            ready = True
+        elif len(room.players) >= room.target_players:
+            ready = True
+
+        if not ready:
+            return
+
+        await manager.mark_room_not_joinable(room)
+
+        room.status = "countdown"
+        starts_at = now_ms() + 3000
+        await room_broadcast(room, "room:countdown", {"roomId": room.id, "startsAtMs": starts_at})
+        await room_broadcast(room, "room:state", room_state_payload(room))
+
+        async def _countdown():
+            try:
+                await asyncio.sleep(3.0)
+                await start_game(room)
+            except asyncio.CancelledError:
+                return
+
+        room.countdown_task = asyncio.create_task(_countdown())
+
+
+    async def start_game(room: Room) -> None:
+        if room.status not in ("countdown", "waiting"):
+            return
+
+        game_id = secrets.token_urlsafe(10)
+        seed = secrets.token_hex(8)
+
+        ref = generate_reference_grid(seed, size=6)
+        pieces = split_into_pieces(ref, size=6, seed=seed)
+
+        started = now_ms()
+        ends = started + 60_000
+
+        room.game = GameSession(
+            game_id=game_id,
+            seed=seed,
+            size=6,
+            reference_grid=ref,
+            pieces=pieces,
+            started_at_ms=started,
+            ends_at_ms=ends,
+            finished=False,
+        )
+        room.status = "in_game"
+
+        for p in room.players.values():
+            p.submitted_at_ms = None
+            p.submission_grid = None
+
+        await room_broadcast(
+            room,
+            "game:start",
+            {
+                "roomId": room.id,
+                "gameId": game_id,
+                "seed": seed,
+                "size": 6,
+                "referenceGrid": ref,
+                "pieces": pieces,
+                "endsAtMs": ends,
+            },
+        )
+        await room_broadcast(room, "room:state", room_state_payload(room))
+
+        async def _game_timer():
+            try:
+                remaining = max(0, (ends - now_ms()) / 1000.0)
+                await asyncio.sleep(remaining)
+                await finish_game(room, reason="timer")
+            except asyncio.CancelledError:
+                return
+
+        room.game_task = asyncio.create_task(_game_timer())
+
+
+    async def finish_game(room: Room, reason: str) -> None:
+        game = room.game
+        if not game or game.finished:
+            return
+
+        game.finished = True
+        room.status = "results"
+
+        if room.game_task and not room.game_task.done():
+            room.game_task.cancel()
+
+        empty = [0] * (game.size * game.size)
+        for p in room.players.values():
+            if p.submitted_at_ms is None:
+                p.submitted_at_ms = game.ends_at_ms
+                p.submission_grid = empty
+
+        results: List[Dict[str, Any]] = []
+        for p in room.players.values():
+            acc = compute_accuracy(game.reference_grid, p.submission_grid or empty)
+            t_ms = max(0, (p.submitted_at_ms or game.ends_at_ms) - game.started_at_ms)
+            results.append({"playerId": p.id, "name": p.name, "accuracy": acc, "timeMs": t_ms})
+
+        results.sort(key=lambda r: (-r["accuracy"], r["timeMs"]))
+        for i, r in enumerate(results, start=1):
+            r["rank"] = i
+
+        await room_broadcast(
+            room,
+            "game:results",
+            {"roomId": room.id, "gameId": game.game_id, "reason": reason, "results": results},
+        )
+        await room_broadcast(room, "room:state", room_state_payload(room))
+
+        await asyncio.sleep(1.0)
+        room.status = "waiting"
+        room.game = None
+        await manager.mark_room_joinable(room)
+        await room_broadcast(room, "room:state", room_state_payload(room))
+        await start_countdown_if_ready(room)
+
+
+    async def handle_submit(room: Room, player_id: str, grid: List[int]) -> None:
+        game = room.game
+        if not game or room.status != "in_game":
+            return
+
+        player = room.players.get(player_id)
+        if not player or player.submitted_at_ms is not None:
+            return
+
+        submit_time = min(now_ms(), game.ends_at_ms)
+        player.submitted_at_ms = submit_time
+        player.submission_grid = grid
+
+        await room_broadcast(room, "room:state", room_state_payload(room))
+
+        if all(p.submitted_at_ms is not None for p in room.players.values()):
+            await finish_game(room, reason="all_submitted")
+
+
+    # -----------------------------
+    # WebSocket endpoint
+    # -----------------------------
+
+    @play_app.websocket("/ws")
+    async def ws_endpoint(ws: WebSocket) -> None:
+        await ws.accept()
+
+        player_id = make_player_id()
+        player_name = f"Player-{player_id[:4]}"
+        current_room: Optional[Room] = None
+
+        try:
+            await ws_send(ws, "session:hello", {"playerId": player_id, "name": player_name})
+
+            while True:
+                raw = await ws.receive_text()
+                msg = safe_json_loads(raw)
+                msg_type = msg.get("type")
+                payload = msg.get("payload") or {}
+
+                if msg_type == "training:join":
+                    target = clamp_int(payload.get("targetPlayers"), 1, 10, 10)
+                    name = payload.get("name")
+                    if isinstance(name, str) and name.strip():
+                        player_name = name.strip()[:24]
+
+                    if current_room is not None:
+                        old = current_room
+                        old.players.pop(player_id, None)
+                        await room_broadcast(old, "room:state", room_state_payload(old))
+                        await manager.mark_room_joinable(old)
+                        await manager.maybe_cleanup_room(old)
+                        current_room = None
+
+                    room = await manager.assign_room(target)
+                    current_room = room
+                    room.players[player_id] = PlayerConn(id=player_id, name=player_name, ws=ws)
+
+                    await room_broadcast(room, "room:state", room_state_payload(room))
+                    await start_countdown_if_ready(room)
+
+                elif msg_type == "room:leave":
+                    if current_room is not None:
+                        room = current_room
+                        room.players.pop(player_id, None)
+                        await room_broadcast(room, "room:state", room_state_payload(room))
+                        await manager.mark_room_joinable(room)
+                        await manager.maybe_cleanup_room(room)
+                        current_room = None
+                    await ws_send(ws, "room:left", {})
+
+                elif msg_type == "game:submit":
+                    if current_room is None:
+                        continue
+                    grid = validate_submission_grid(payload.get("grid"), size=6)
+                    if grid is None:
+                        await ws_send(ws, "error", {"message": "Invalid grid. Expected list of 36 ints (0/1)."})
+                        continue
+                    await handle_submit(current_room, player_id, grid)
+
+                elif msg_type == "ping":
+                    await ws_send(ws, "pong", {"ts": now_ms()})
+
+                else:
+                    await ws_send(ws, "error", {"message": f"Unknown message type: {msg_type}"})
+
+        except WebSocketDisconnect:
+            if current_room is not None:
+                room = current_room
+                room.players.pop(player_id, None)
+                await room_broadcast(room, "room:state", room_state_payload(room))
+                await manager.mark_room_joinable(room)
+                await manager.maybe_cleanup_room(room)
+        except Exception:
+            if current_room is not None:
+                room = current_room
+                room.players.pop(player_id, None)
+                try:
+                    await room_broadcast(room, "room:state", room_state_payload(room))
+                except Exception:
+                    pass
+                await manager.mark_room_joinable(room)
+                await manager.maybe_cleanup_room(room)
+            try:
+                await ws.close()
+            except Exception:
+                pass
+    return play_app
+
+# Mount HestioPlay under /play
+try:
+    app.mount('/play', build_play_app())
+except Exception:
+    pass

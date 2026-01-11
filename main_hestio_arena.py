@@ -1,5 +1,6 @@
 
 import time
+import asyncio
 import uuid
 import random
 import json
@@ -671,7 +672,10 @@ ROOM_HTML = r"""<!doctype html>
             <h2>Komandos</h2>
             <div class="small">Tu esi: <b class="mono" id="meName">—</b> · Team <b class="mono" id="meTeam">—</b></div>
           </div>
-          <button class="btn gold" id="startBtn" disabled>Pradėti</button>
+          <div style="display:flex; gap:10px; align-items:center;">
+            <button class="btn secondary" id="joinBtn">Join</button>
+            <button class="btn" id="readyBtn" disabled>Ready</button>
+          </div>
         </div>
 
         <div class="teams">
@@ -818,11 +822,25 @@ ROOM_HTML = r"""<!doctype html>
     $("scoreB").textContent = state.score_b ?? 0;
 
     const full = state.players.length === state.required_total;
-    const canStart = full && state.phase === "LOBBY" && state.host_player_id === playerId;
-    $("startBtn").disabled = !canStart;
+    const allReady = full && state.players.every(p => !!p.ready);
 
     $("confirmBtn").disabled = !(state.phase === "INPUT" && selectedCell);
-    $("hintText").textContent = full ? "Komandos pilnos. Galite pradėti." : "Žaidimas prasidės tik kai prisijungs visi žaidėjai.";
+
+    if(state.phase === "LOBBY"){
+      if(!full){
+        $("hintText").textContent = `Laukia žaidėjų (${state.players.length}/${state.required_total}).`;
+      } else if(state.countdown_remaining !== null && state.countdown_remaining !== undefined){
+        $("hintText").textContent = `Startas po ${state.countdown_remaining}...`;
+      } else if(!allReady){
+        $("hintText").textContent = "Komandos pilnos. Paspausk READY (visi).";
+      } else {
+        $("hintText").textContent = "Visi READY. Startuojame...";
+      }
+    } else if(state.phase === "INPUT"){
+      $("hintText").textContent = "Žaidimas vyksta. Pateik pasirinkimą ir patvirtink.";
+    } else {
+      $("hintText").textContent = "Žaidimas baigtas.";
+    }
   }
 
   function renderLog() {
@@ -835,13 +853,39 @@ ROOM_HTML = r"""<!doctype html>
     if(ws && ws.readyState === 1) ws.send(JSON.stringify(msg));
   }
 
-  $("startBtn").onclick = () => send({t:"start"});
   $("confirmBtn").onclick = () => {
     if(!selectedCell) return;
     send({t:"submit", cell:selectedCell, bid: Number($("bid").value), forecast});
   };
 
+  function myPlayer(){
+    if(!state || !playerId) return null;
+    return (state.players || []).find(p => p.player_id === playerId) || null;
+  }
+
+  function updateLobbyButtons(){
+    const joined = !!playerId;
+    const me = myPlayer();
+    const inLobby = !state || state.phase === "LOBBY";
+    const ready = me ? !!me.ready : false;
+
+    $("joinBtn").disabled = joined;
+    $("joinBtn").textContent = joined ? "Joined" : "Join";
+
+    $("readyBtn").disabled = !joined || !inLobby;
+    $("readyBtn").textContent = ready ? "READY" : "Not Ready";
+    if(ready) $("readyBtn").classList.add("active"); else $("readyBtn").classList.remove("active");
+  }
+
+  $("joinBtn").onclick = () => join();
+  $("readyBtn").onclick = () => {
+    const me = myPlayer();
+    if(!me) return;
+    send({t:"ready", ready: !me.ready});
+  };
+
   async function join() {
+    if(playerId) return;
     const nickname = (localStorage.getItem("arena_nick") || "").trim() || prompt("Įvesk nickname:", "stebis") || "Guest";
     localStorage.setItem("arena_nick", nickname);
 
@@ -860,7 +904,10 @@ ROOM_HTML = r"""<!doctype html>
     $("meName").textContent = nickname;
     $("meTeam").textContent = j.team;
     connectWS();
+    updateLobbyButtons();
   }
+
+  let lastPhase = null;
 
   function connectWS() {
     ws = new WebSocket(wsUrl());
@@ -872,10 +919,16 @@ ROOM_HTML = r"""<!doctype html>
       let m = null;
       try { m = JSON.parse(ev.data); } catch(e) { return; }
       if(m.t === "state") {
+        const prev = lastPhase;
         state = m.state;
+        lastPhase = state.phase;
         renderBoard();
         renderTeams();
         renderLog();
+        updateLobbyButtons();
+        if(prev === "LOBBY" && state.phase === "INPUT"){
+          setStatus("Žaidimas prasidėjo.");
+        }
       } else if(m.t === "error") {
         alert(m.message || "Klaida");
       }
@@ -884,7 +937,7 @@ ROOM_HTML = r"""<!doctype html>
   }
 
   updateBidLabel();
-  join();
+  updateLobbyButtons();
 })();
 </script>
 </body>
@@ -948,7 +1001,7 @@ class Player:
         self.nickname = nickname
         self.team = team
         self.joined_at = _now()
-        self.ready = True  # MVP: auto-ready
+        self.ready = False  # Lobby: player must click Ready
 
 class Room:
     def __init__(self, room_id: str, game_id: str, mode: str):
@@ -977,6 +1030,10 @@ class Room:
         self.submissions: Dict[str, Dict[str, Any]] = {}
         self.sockets: Set[WebSocket] = set()
 
+        self.countdown_seconds: int = 3
+        self.countdown_started_at: Optional[float] = None
+        self._countdown_task: Optional[asyncio.Task] = None
+
     def touch(self) -> None:
         self.last_activity = _now()
 
@@ -1003,6 +1060,7 @@ def _room_state(room: Room) -> Dict[str, Any]:
         "max_rounds": room.max_rounds,
         "score_a": room.score_a,
         "score_b": room.score_b,
+        "countdown_remaining": _countdown_remaining(room),
         "players": [
             {
                 "player_id": p.player_id,
@@ -1015,6 +1073,83 @@ def _room_state(room: Room) -> Dict[str, Any]:
         "board": room.board,
         "log": room.log[-20:],
     }
+
+
+def _countdown_remaining(room: "Room") -> Optional[int]:
+    if room.countdown_started_at is None:
+        return None
+    elapsed = int(_now() - room.countdown_started_at)
+    rem = room.countdown_seconds - elapsed
+    return max(0, rem)
+
+def _lobby_full_and_ready(room: "Room") -> bool:
+    if room.phase != "LOBBY":
+        return False
+    if len(room.players) != room.required_total:
+        return False
+    return all(p.ready for p in room.players.values())
+
+async def _cancel_countdown(room: "Room", reason: Optional[str] = None) -> None:
+    if room.countdown_started_at is None and room._countdown_task is None:
+        return
+    room.countdown_started_at = None
+    t = room._countdown_task
+    room._countdown_task = None
+    if t is not None and not t.done():
+        t.cancel()
+    if reason:
+        room.log.append(reason)
+    await _broadcast_state(room)
+
+async def _maybe_start_countdown(room: "Room") -> None:
+    if room._countdown_task is not None:
+        # Countdown running; verify conditions still hold
+        if not _lobby_full_and_ready(room):
+            await _cancel_countdown(room, "Countdown atšauktas (ne visi READY).")
+        return
+
+    if not _lobby_full_and_ready(room):
+        return
+
+    room.countdown_started_at = _now()
+    room.log.append("Visi READY. Startuojame po 3..2..1")
+    room._countdown_task = asyncio.create_task(_run_countdown(room))
+    await _broadcast_state(room)
+
+async def _run_countdown(room: "Room") -> None:
+    try:
+        # Broadcast each second of the countdown
+        for _ in range(room.countdown_seconds, 0, -1):
+            if room.countdown_started_at is None:
+                return
+            if not _lobby_full_and_ready(room):
+                await _cancel_countdown(room, "Countdown atšauktas (ne visi READY).")
+                return
+            await _broadcast_state(room)
+            await asyncio.sleep(1)
+
+        # Final gate: still valid?
+        if room.countdown_started_at is None:
+            return
+        if not _lobby_full_and_ready(room):
+            await _cancel_countdown(room, "Countdown atšauktas (ne visi READY).")
+            return
+
+        room.countdown_started_at = None
+        room._countdown_task = None
+
+        room.phase = "INPUT"
+        room.round = 1
+        room.submissions = {}
+        room.log.append("Žaidimas prasidėjo.")
+        await _broadcast_state(room)
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        # Ensure task pointer is cleared on unexpected errors
+        room.countdown_started_at = None
+        room._countdown_task = None
+        return
 
 async def _broadcast_state(room: Room) -> None:
     msg = {"t": "state", "state": _room_state(room)}
@@ -1155,7 +1290,20 @@ async def ws_room(ws: WebSocket, room_id: str):
             if t == "hello":
                 await _broadcast_state(room)
 
+            elif t == "ready":
+                if room.phase != "LOBBY":
+                    continue
+                val = bool(msg.get("ready"))
+                p = room.players.get(player_id)
+                if not p:
+                    continue
+                p.ready = val
+                room.log.append(f"{p.nickname}: {'READY' if val else 'NOT READY'}")
+                await _broadcast_state(room)
+                await _maybe_start_countdown(room)
+
             elif t == "start":
+                # Backwards compatibility: host may trigger countdown manually
                 if room.phase != "LOBBY":
                     continue
                 if player_id != room.host_player_id:
@@ -1164,10 +1312,10 @@ async def ws_room(ws: WebSocket, room_id: str):
                 if len(room.players) != room.required_total:
                     await ws.send_json({"t":"error", "message":"Dar ne visi žaidėjai prisijungę."})
                     continue
-                room.phase = "INPUT"
-                room.round = 1
-                room.log.append("Žaidimas pradėtas.")
-                await _broadcast_state(room)
+                if not all(p.ready for p in room.players.values()):
+                    await ws.send_json({"t":"error", "message":"Ne visi žaidėjai pažymėjo READY."})
+                    continue
+                await _maybe_start_countdown(room)
 
             elif t == "submit":
                 if room.phase != "INPUT":

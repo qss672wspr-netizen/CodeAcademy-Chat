@@ -1707,13 +1707,11 @@ async def finish_game(room: Room, reason: str) -> None:
     )
     await room_broadcast(room, "room:state", room_state_payload(room))
 
-    # Reopen room after a short pause
-    await asyncio.sleep(1.0)
-    room.status = "waiting"
+    # Keep the room in "results" until players explicitly decide what to do next (play again, switch games, or leave).
+    # This prevents the server from auto-starting a new round immediately, which would cut the results screen short.
     room.game = None
-    await manager.mark_room_joinable(room)
-    await room_broadcast(room, "room:state", room_state_payload(room))
-    await start_countdown_if_ready(room)
+    await manager.mark_room_not_joinable(room)
+    return
 
 
 async def handle_submit(room: Room, player_id: str, payload: Dict[str, Any]) -> None:

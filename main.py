@@ -1361,6 +1361,11 @@ HTML = r"""<!doctype html>
     .item.active{ border-color: rgba(124,255,107,.28); background: rgba(124,255,107,.06); }
     .iname{ font-weight:900; font-size:13px; }
     .idesc{ color:var(--muted); font-size:11px; margin-top:2px; }
+
+    /* Ensure long room names don't push action buttons off-screen */
+    .item .rmeta{ flex:1 1 auto; min-width:0; }
+    .item .ractions{ flex:0 0 auto; display:flex; gap:8px; align-items:center; }
+    .iname, .idesc{ max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     /* Rooms panel sections */
     .secTitle{ color:var(--muted); font-size:11px; font-weight:900; letter-spacing:.06em; text-transform:uppercase; margin:2px 2px 8px; }
     .roomsGroup{ display:flex; flex-direction:column; }
@@ -1409,25 +1414,17 @@ HTML = r"""<!doctype html>
       background: rgba(255,120,120,0.10);
     }
 .leaveBtn{
-      width:28px; height:28px; box-sizing:border-box;
-      border-radius:999px; border:1px solid rgba(255,255,255,0.08);
-      background:rgba(0,0,0,0.12); color:var(--muted);
-      font-weight:900; font-size:16px; line-height:1;
-      cursor:pointer;
-      display:inline-flex; align-items:center; justify-content:center;
-      padding:0; flex:0 0 auto;
+      width:26px; height:26px; border-radius:10px; border:1px solid rgba(255,255,255,0.08);
+      background:rgba(0,0,0,0.12); color:var(--muted); font-weight:900; cursor:pointer;
+      display:inline-flex; align-items:center; justify-content:center; padding:0; flex:0 0 auto; line-height:1; font-size:14px;
     }
     .leaveBtn:hover{ border-color:rgba(255,255,255,0.18); color:var(--text); }
     .leaveBtn:disabled{ opacity:.35; cursor:not-allowed; }
 
 .delBtn{
-  width:28px; height:28px; box-sizing:border-box;
-  border-radius:999px; border:1px solid rgba(239,68,68,.45);
-  background:rgba(239,68,68,.10); color:rgba(239,68,68,.95);
-  font-weight:900; font-size:16px; line-height:1;
-  cursor:pointer;
-  display:inline-flex; align-items:center; justify-content:center;
-  padding:0; flex:0 0 auto;
+  width:26px; height:26px; border-radius:10px; border:1px solid rgba(239,68,68,.45);
+  background:rgba(239,68,68,.10); color:rgba(239,68,68,.95); font-weight:900; cursor:pointer;
+  display:flex; align-items:center; justify-content:center; line-height:1; padding:0;
 }
 .delBtn:hover{ background:rgba(239,68,68,.16); }
 .delBtn:disabled{ opacity:.35; cursor:not-allowed; }
@@ -2155,11 +2152,11 @@ function esc(s){
 
 
       row.innerHTML = `
-        <div>
+        <div class="rmeta">
           <div class="iname">${esc(r.title)}</div>
           <div class="idesc">${esc(r.topic || "")}</div>
         </div>
-        <div style="display:flex; gap:8px; align-items:center;">
+        <div class="ractions">
           <div class="countpill" title="online">${cnt}</div>
           <div class="badge" style="${unread>0 ? 'display:inline-flex;' : ''}">${unread}</div>
           ${leaveHtml}
@@ -2197,11 +2194,11 @@ function esc(s){
       const delHtml = amAdmin ? `<button class="delBtn" title="${delTitle}" aria-label="Trinti" ${canDelete ? "" : "disabled"}>×</button>` : "";
 
       row.innerHTML = `
-        <div>
+        <div class="rmeta">
           <div class="iname">${esc(r.title)}</div>
           <div class="idesc">${esc(r.topic || "")}</div>
         </div>
-        <div style="display:flex; gap:8px; align-items:center;">
+        <div class="ractions">
           ${delHtml}
           <div class="countpill" title="online">${cnt}</div>
         </div>

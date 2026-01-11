@@ -698,8 +698,8 @@ PLAY_PAGE = r"""<!doctype html>
   header, main{position:relative; z-index:1;}
 
   .gameGrid{
-    display:grid;
-    grid-template-columns:1fr 1fr;
+    display:flex;
+    flex-direction:column;
     gap:10px;
     margin-top:6px;
   }
@@ -775,7 +775,7 @@ PLAY_PAGE = r"""<!doctype html>
     <div class="card">
       <h3>Lobby</h3>
       
-      <div class="row">
+      <div style="margin-top:2px;">
         <label class="muted">Game</label>
         <div class="gameGrid" id="gameCards"></div>
         <input type="hidden" id="gameType" value="rebuild_6x6" />
@@ -1005,6 +1005,10 @@ PLAY_PAGE = r"""<!doctype html>
     if(plus)  plus.onclick  = ()=> setPlayers(parseInt(hidden.value||"2",10)+1);
 
     // Default game
+    // Prefill nick from HestioRooms (shared localStorage key)
+    const pref = preferredNick();
+    if(pref && byId("name")) { byId("name").value = pref; persistNick(pref); }
+
     selectGame(byId("gameType").value || "rebuild_6x6");
   }
 

@@ -69,7 +69,7 @@ else:
     @app.get("/play2")
     async def play2_missing() -> PlainTextResponse:
         return PlainTextResponse(
-            "HestioPlay v2 could not be loaded. Ensure main_hestio_multigame_v2_patched.py is present in the repo.\n\n"
+            "HestioPlay v2 could not be loaded. Ensure main_hestio_multigame_v2.py is present in the repo.\n\n"
             + (PLAY2_IMPORT_ERROR or ""),
             status_code=500,
         )
@@ -124,7 +124,7 @@ def admin_pw_ok(pw: str) -> bool:
     return secrets.compare_digest((pw or ""), ADMIN_PASSWORD)
 
 # ----------------- Validation -----------------
-NICK_RE = re.compile(r"^[A-Za-z0-9ĄČĘĖĮŠŲŪŽąčęėįšųūž_\-\. ]{2,24}$")
+NICK_RE = re.compile(r"^[A-Za-z0-9ĄČĘĖĮŠŲŪŽąčęėįšųūž_\-\. ]{2,10}$")
 ROOM_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]{0,63}$")
 
 def valid_nick(n: str) -> bool:
@@ -1492,8 +1492,8 @@ HTML = r"""<!doctype html>
       background-repeat:no-repeat;
       background-position:center;
       /* Responsive: always fits on smaller screens */
-      background-size:min(82vmin, 760px);
-      opacity:.20;
+      background-size:min(70vmin, 640px);
+      opacity:.18;
       pointer-events:none;
       filter:none;
     }
@@ -1561,9 +1561,9 @@ HTML = r"""<!doctype html>
       </div>
       <div class="cardBody">
         <div class="panel" style="border-radius:16px;">
-          <div class="head"><span>Nick</span><span class="small">2–24</span></div>
+          <div class="head"><span>Nick</span><span class="small">2–10</span></div>
           <div style="padding:12px;">
-            <input id="nick" placeholder="pvz. Tomas" maxlength="24"/>
+            <input id="nick" placeholder="pvz. Tomas" maxlength="10"/>
             <div id="nickState" class="small" style="margin-top:10px;"></div>
             
 <div class="label" style="margin-top:12px; display:none;" id="lblPw">Slaptažodis (tik admin)</div>
@@ -1945,7 +1945,7 @@ function isDefaultRoom(room){
   function isAdminNick(n){ return (n||"").trim().toLowerCase() === "admin"; }
 
   function validateNick(n){
-    return /^[A-Za-z0-9ĄČĘĖĮŠŲŪŽąčęėįšųūž_\\-\\. ]{2,24}$/.test((n||"").trim());
+    return /^[A-Za-z0-9ĄČĘĖĮŠŲŪŽąčęėįšųūž_\\-\\. ]{2,10}$/.test((n||"").trim());
   }
   
 function timeAgo(ts){
@@ -2313,7 +2313,7 @@ function renderUsers(items){
     nickState.textContent = "";
 
     if(!validateNick(n)){
-      showNickErr("Netinkamas nick (2–24, raidės/skaičiai/tarpas/_-.)");
+      showNickErr("Netinkamas nick (2–10, raidės/skaičiai/tarpas/_-.)");
       return;
     }
 
@@ -2648,7 +2648,7 @@ function renderUsers(items){
 
   (function init(){
     const saved = (localStorage.getItem("nick")||"").trim();
-    if(saved) nickEl.value = saved;
+    if(saved) nickEl.value = saved.slice(0,10);
     scheduleNickCheck();
   })();
 </script>
@@ -3068,7 +3068,7 @@ def build_play_app() -> 'FastAPI':
               <option>6</option><option>7</option><option>8</option><option>9</option><option selected>10</option></select>
           </div>
           <div class="row" style="margin-top:8px;">
-            <input id="name" placeholder="Nickname (optional)" maxlength="24" style="flex:1; min-width:160px;" />
+            <input id="name" placeholder="Nickname (optional)" maxlength="10" style="flex:1; min-width:160px;" />
             <button class="primary" id="btnJoin" onclick="join()">Join</button>
             <button id="btnLeave" onclick="leave()" disabled>Leave</button>
           </div>

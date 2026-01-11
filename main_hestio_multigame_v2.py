@@ -553,14 +553,14 @@ CHAT_FALLBACK_HTML = """
 
 
 @app.get("/")
-async def chat_index() -> HTMLResponse | FileResponse:
+async def chat_index():
     if CHAT_INDEX.exists():
         return FileResponse(str(CHAT_INDEX))
     return HTMLResponse(CHAT_FALLBACK_HTML)
 
 
 @app.get("/chat")
-async def chat_alias() -> HTMLResponse | FileResponse:
+async def chat_alias():
     return await chat_index()
 
 

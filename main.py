@@ -125,7 +125,7 @@ def admin_pw_ok(pw: str) -> bool:
 
 # ----------------- Validation -----------------
 NICK_RE = re.compile(r"^[A-Za-z0-9ĄČĘĖĮŠŲŪŽąčęėįšųūž_\-\. ]{2,24}$")
-ROOM_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]{0,23}$")
+ROOM_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]{0,63}$")
 
 def valid_nick(n: str) -> bool:
     return bool(NICK_RE.match((n or "").strip()))
@@ -1487,12 +1487,13 @@ HTML = r"""<!doctype html>
     #lobby::before{
       content:"";
       position:absolute;
-      inset:-12%;
+      inset:0;
       background-image:url('__LOGO_WATERMARK__');
       background-repeat:no-repeat;
-      background-position:center 55%;
-      background-size:85%;
-      opacity:.22;
+      background-position:center;
+      /* Responsive: always fits on smaller screens */
+      background-size:min(82vmin, 760px);
+      opacity:.20;
       pointer-events:none;
       filter:none;
     }
